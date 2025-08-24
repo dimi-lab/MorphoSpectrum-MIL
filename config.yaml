@@ -1,0 +1,42 @@
+HP_INDEX: "hp1"
+
+INPUT_FEATURE_SIZE: 512
+
+N_CLASSES: 4
+
+LABEL_MAP:
+  0: "Clear_Cell_Carcinoma"
+  1: "Ovarian_Endometrioid_Carcinoma"
+  2: "Ovarian_High_Grade_Serous_Carcinoma"
+  3: "Ovarian_Serous_Borderline"
+
+LABEL_MAP_SHORT:
+  0: "Clear"
+  1: "Endo"
+  2: "High"
+  3: "Border"
+
+hp1:
+  # Training hyperparameters
+  max_epochs: 150
+  initial_lr: 1e-4
+
+  # Early stopping
+  earlystop_patience: 20
+  earlystop_min_epochs: 20
+
+  # Learning rate decay
+  milestones: "5, 15, 30"
+  gamma_lr: 0.1
+
+  # Regularization
+  weight_decay: 1e-5
+  p_dropout_fc: 0.5
+  p_dropout_atn: 0.25
+
+  # Model architecture
+  model_size: "small"
+
+  # Other settings
+  sampling_method: "random"
+
