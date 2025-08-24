@@ -1,6 +1,12 @@
 # Readme
 
+## Install dependencies
+The below command creates a conda environment named MorphoSpec in your working directory.
 
+```
+conda env create -f environment.yml
+conda activate MorphoSpec
+```
 
 ## Data Preparation
 
