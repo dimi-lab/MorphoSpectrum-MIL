@@ -222,8 +222,6 @@ def compute_round_roc_pr(labels, probs, n_classes):
         print(f"Computing AUC for class {class_idx}")
         fpr, tpr, _ = roc_curve(labels_binarized[:, class_idx], probs[:, class_idx])
         roc_auc = auc(fpr, tpr)
-        print(f"fpr is {fpr}, tpr is {tpr}")
-        print(f"roc_auc is {roc_auc}")
 
         precision, recall, _ = precision_recall_curve(labels_binarized[:, class_idx], probs[:, class_idx])
 
