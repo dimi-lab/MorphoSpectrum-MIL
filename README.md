@@ -8,11 +8,17 @@ It summarizes how different scripts are connected, the inputs they consume, and 
 ![Execution Flow of MorphoSpec Repository](Execution_Flow_of_MorphoSpec_Repository.png)
 
 ## Install dependencies
-The below command creates a conda environment named MorphoSpec in your working directory.
+First, create the base conda environment (without CONCH):
 
 ```
 conda env create -f environment.yml
 conda activate MorphoSpec
+```
+
+Then, install CONCH from GitHub as a post-installation step:
+
+```
+pip install git+https://github.com/Mahmoodlab/CONCH.git
 ```
 
 ## Data Preparation

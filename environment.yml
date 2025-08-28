@@ -156,7 +156,6 @@ dependencies:
       - absl-py==2.1.0
       - certifi==2024.8.30
       - charset-normalizer==3.4.0
-      - conch==0.1.0
       - filelock==3.16.1
       - fsspec==2024.9.0
       - ftfy==6.3.0
