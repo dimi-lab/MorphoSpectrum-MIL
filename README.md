@@ -5,7 +5,7 @@
 The figure below provides a **macroscopic view of the entire repository workflow**.  
 It summarizes how different scripts are connected, the inputs they consume, and the outputs they produce.  
 
-![Execution Flow of MorphoSpec Repository](Execution_Flow_of_MorphoSpec_Repository.png)
+![Execution Flow of MorphoSpec Repository](Execution_Flow_of_MorphoSpec_Repo.png)
 
 ## Install dependencies
 First, create the base conda environment (without CONCH):
