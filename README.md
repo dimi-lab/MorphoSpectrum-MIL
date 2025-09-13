@@ -368,7 +368,7 @@ Columns include:
 ```
 python -u high_contribution_patches_extraction.py \
     --feature_bag_dir ./feature_bags \
-    --sample_stratf_file sample_stratification_result_test.csv \
+    --sample_stratf_file sample_stratification_result.csv \
     --output_dir ./test_result/ \
     --subtype Clear \
     --stability Consistently_Correct \
@@ -408,13 +408,66 @@ python high_contribution_patches_cluster.py \
 
 - **`--high_contri_csv`**: High contribution patch results obtained from [High-Contribution Patch Extraction](#high-contribution-patch-extraction).
 
-## QuPath Extension: PhenoCA
+### 3. Troubleshooting
 
-In the *export* mode of the `high_contribution_patches_cluster.py` script, a file named `<slide_id>_hc_coords.csv` is generated. This file records the **high-contribution patches** within the specified slide (`slide_id`), including their cluster labels (`hc_label`) and patch coordinates.
+If you encounter an error when running `import faiss` such as:
 
-We developed a QuPath extension named **PhenoCA**. After opening a slide in QuPath, users can import the corresponding CSV file through PhenoCA. The extension will load the patch coordinates into the WSI and highlight them with different colors according to their `hc_label`, thereby visualizing the spatial distribution of different clusters.
+```
+ImportError: ...libfaiss.so: undefined symbol: __libc_single_threaded
+```
 
-In addition, the extension provides an interactive panel that allows pathologists to examine and annotate the morphological characteristics of these patches, supporting both model interpretability studies and morphological analysis.
+This happens because the FAISS package you installed was compiled against a newer version of **glibc** (≥ 2.34), while your system uses an older one (for example, Ubuntu 20.04 ships with glibc 2.31). As a result, Python cannot load `libfaiss.so`.
 
-This repository provides a ready-to-use plugin package: **`PhenoCA.jar`**. To install, simply drag the JAR file into the QuPath interface.
- **Note:** when using the plugin, the `<slide_id>_hc_coords.csv` file being imported must correspond to the slide currently opened in QuPath.
+To fix this, you can reinstall a FAISS build that is compatible with older glibc. A common solution is to switch to the CPU version:
+
+```bash
+conda remove -y faiss-gpu libfaiss
+conda install -y -c conda-forge faiss-cpu=1.7.4
+```
+
+## PhenoCA: QuPath Extension for Cluster Visualization and Annotation
+
+### 1. Import High-Contribution Patches
+
+When running the script `high_contribution_patches_cluster.py` in *export* mode, a file named `<slide_id>_hc_coords.csv` is generated. This file records the **high-contribution patches** within a slide (`slide_id`), including their cluster labels (`hc_label`) and patch coordinates.
+
+### 2. Visualization in QuPath
+
+We developed a QuPath extension called **PhenoCA** to visualize and annotate these clusters in WSIs. The plugin provides two modes of importing:
+
+- **Create File Selections (single-slide import)**
+  - Open one slide in QuPath.
+  - Select the corresponding `<slide_id>_hc_coords.csv` file.
+  - Click *Create File Selections* to load and visualize all high-contribution patches in that slide, with clusters highlighted in different colors according to their `hc_label`.
+- **Create Project Selections (batch import)**
+  - First, create a project in QuPath and import multiple slides.
+  - Merge several `<slide_id>_hc_coords.csv` files into a single CSV file.
+  - Select this merged CSV file in the plugin and click *Create Project Selections*.
+  - The plugin will automatically load and visualize the high-contribution patches in each corresponding slide across the project.
+  - This mode enables **batch import and visualization**, significantly improving efficiency when working with large cohorts.
+
+### 3. Interactive Annotation
+
+In addition to visualization, PhenoCA provides an **interactive annotation panel** that allows pathologists to:
+
+- Select individual clusters;
+- Examine their morphology at multiple magnification levels;
+- Annotate histological and cytological features;
+- Save structured annotation results locally.
+
+This functionality supports both **model interpretability studies** and **morphological spectrum analysis**.
+
+The following figure illustrates the annotation workflow in PhenoCA:
+![PhenoCA interface](PhenoCA_interface.png)
+------
+
+### 4. Installation
+
+This repository provides a ready-to-use plugin package: **`qupath-extension-PhenoCA.jar`**.
+ To install:
+
+1. Drag and drop the JAR file into the QuPath interface.
+2. Restart QuPath if needed.
+
+**Note:** The CSV file being imported must correspond to the currently opened slide (for *Create File Selections*) or to slides included in the project (for *Create Project Selections*).
+

@@ -70,7 +70,7 @@ def main(args):
     csv_files = [
         f.resolve()
         for f in test_result_basepath.glob(
-            "Datasplit_*_10_fold_by_patient_random/each_slide_result/*_each_slide_result.csv"
+            "Datasplit_*_10_fold_by_patient*/each_slide_result/*_each_slide_result.csv"
         )
     ]
 
@@ -78,7 +78,7 @@ def main(args):
     csv_files = sorted(
         csv_files,
         key=lambda x: int(
-            re.search(r"Datasplit_(\d+)_10_fold_by_patient_random", str(x)).group(1)
+            re.search(r"Datasplit_(\d+)_10_fold_by_patient", str(x)).group(1)
         ),
     )
 

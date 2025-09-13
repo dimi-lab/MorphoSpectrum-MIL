@@ -66,7 +66,7 @@ for label_file in "${label_files[@]}"; do
     (
       export CUDA_VISIBLE_DEVICES=${gpu_idx}
       python -u train_early_stopping.py \
-          --data_dir feature_bags \
+          --feature_bag_dir feature_bags \
           --input_feature_size 512 \
           --manifest "${label_file}" \
           --round ${round} \
