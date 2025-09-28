@@ -418,11 +418,10 @@ ImportError: ...libfaiss.so: undefined symbol: __libc_single_threaded
 
 This happens because the FAISS package you installed was compiled against a newer version of **glibc** (≥ 2.34), while your system uses an older one (for example, Ubuntu 20.04 ships with glibc 2.31). As a result, Python cannot load `libfaiss.so`.
 
-To fix this, you can reinstall a FAISS build that is compatible with older glibc. A common solution is to switch to the CPU version:
+**Solution:** install the CPU-compatible environment file instead
 
 ```bash
-conda remove -y faiss-gpu libfaiss
-conda install -y -c conda-forge faiss-cpu=1.7.4
+conda env create -f environment.cpu.yml
 ```
 
 ## PhenoCA: QuPath Extension for Cluster Visualization and Annotation
