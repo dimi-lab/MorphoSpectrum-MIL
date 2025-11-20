@@ -5,7 +5,7 @@
 The figure below provides a **macroscopic view of the entire repository workflow**.  
 It summarizes how different scripts are connected, the inputs they consume, and the outputs they produce.  
 
-![Execution Flow of MorphoSpec Repository](Execution_Flow_of_MorphoSpec_Repo.png)
+![Execution Flow of Global Explanation Generation](Execution_Flow_of_Global_Explanation_Generation.png)
 
 ## Install dependencies
 First, create the base conda environment (without CONCH):
@@ -426,6 +426,8 @@ conda env create -f environment.cpu.yml
 
 ## MorphoCA: QuPath Extension for Cluster Visualization and Annotation
 
+The usage manuals for MorphoCA Manual is provided in the plugins/ directory.
+
 ### 1. Import High-Contribution Patches
 
 When running the script `high_contribution_patches_cluster.py` in *export* mode, a file named `<slide_id>_hc_coords.csv` is generated. This file records the **high-contribution patches** within a slide (`slide_id`), including their cluster labels (`hc_label`) and patch coordinates.
@@ -447,7 +449,7 @@ We developed a QuPath extension called **MorphoCA** to visualize and annotate th
 
 ### 3. Interactive Annotation
 
-In addition to visualization, PhenoCA provides an **interactive annotation panel** that allows pathologists to:
+In addition to visualization, MorphoCA provides an **interactive annotation panel** that allows pathologists to:
 
 - Select individual clusters;
 - Examine their morphology at multiple magnification levels;
@@ -456,7 +458,7 @@ In addition to visualization, PhenoCA provides an **interactive annotation panel
 
 This functionality supports both **model interpretability studies** and **morphological spectrum analysis**.
 
-The following figure illustrates the annotation workflow in PhenoCA:
+The following figure illustrates the annotation workflow in MorphoCA:
 ![MorphoCA interface](MorphoCA_interface.png)
 ------
 

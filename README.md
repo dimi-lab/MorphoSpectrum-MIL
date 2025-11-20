@@ -49,6 +49,7 @@ plugins/
   ├── MorphoCA (expert interpretation of feature clusters)
   └── MorphoExplainer (spectrum-based slide-level explanation viewer)
 ```
+The usage manuals for both plugins—MorphoCA Manual and MorphoExplainer Manual—are also provided in the plugins/ directory.
 
 ------
 

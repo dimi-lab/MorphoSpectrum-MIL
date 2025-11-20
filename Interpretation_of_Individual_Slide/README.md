@@ -652,3 +652,7 @@ These overlays combine:
 - a heatmap of class-specific attention scores
 
 Useful for inspection and debugging.
+
+## MorphoExplainer: QuPath Extension for Visualizing MorphoXAI slide-level explanation
+
+The usage manuals for MorphoExplainer Manual is provided in the plugins/ directory.
