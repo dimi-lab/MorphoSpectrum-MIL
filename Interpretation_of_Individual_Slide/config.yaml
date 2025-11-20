@@ -1,0 +1,118 @@
+# =====================================
+# Morphologic Spectrum Assignment Config
+# =====================================
+
+paths:
+  # ---- Training inputs ----
+  train_embeds:
+    Clear:   "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result/Clear.csv"
+    Endo:    "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result/Endo.csv"
+    High:    "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result/High.csv"
+    Border:  "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result/Border.csv"
+
+  train_clusters:
+    Clear:   "/home/peiliang/projects/Dr_Huang_Project/im4MEC/heatmaps/Clear/slide_results2"
+    Endo:    "/home/peiliang/projects/Dr_Huang_Project/im4MEC/heatmaps/Endo/slide_results2"
+    High:    "/home/peiliang/projects/Dr_Huang_Project/im4MEC/heatmaps/High/slide_results2"
+    Border:  "/home/peiliang/projects/Dr_Huang_Project/im4MEC/heatmaps/Border/slide_results2"
+
+  # ---- Transition phenotypes (optional) ----
+  transition_embeds:
+    Endo_to_High: "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result/transition_patches_Endo_to_High.csv"
+    High_to_Endo: "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result/transition_patches_High_to_Endo.csv"
+
+  transition_clusters:
+    Endo_to_High: "/home/peiliang/projects/Dr_Huang_Project/im4MEC/heatmaps/Endo/transition_slide_results2"
+    High_to_Endo: "/home/peiliang/projects/Dr_Huang_Project/im4MEC/heatmaps/High/transition_slide_results2"
+
+  # ---- Testing inputs ----
+  test_embeds:
+    Clear:   "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result_single/high_contri_path_all_predictions/2nd_Clear.csv"
+    Endo:    "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result_single/high_contri_path_all_predictions/2nd_Endo.csv"
+    High:    "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result_single/high_contri_path_all_predictions/2nd_High.csv"
+    Border:  "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result_single/high_contri_path_all_predictions/2nd_Border.csv"
+
+  # ---- Slide-level summary ----
+  each_slide_result: "/home/peiliang/projects/Dr_Huang_Project/im4MEC/test_result_single/CONCH/cluster/149_checkpoint/each_slide_result/each_slide_result.csv"
+
+  # ---- Output directory ----
+  output_dir: "./spectrum_assign_knn4"
+
+  h5_base: "/home/peiliang/projects/MorphoSpectrum-MIL/feature_bags" 
+  spectrum_tiles_dir: "./spectrum_qupath4_mul_predictions"  # 中间 tiles CSV 输出根
+  geojson_root: "./spectrum_geojson_final"          # 最终 GeoJSON 输出根
+  #manifest: "/home/peiliang/projects/Dr_Huang_Project/im4MEC/Data_Split/2nd_dataset/2nd_output_svs_file_mapping.csv"                         # 列: label,class
+  manifest: "/home/peiliang/projects/MorphoSpectrum-MIL/Data_Split/independent_svs_file_mapping.csv"                         # 列: label,class
+  attn_checkpoint: "/home/peiliang/projects/Dr_Huang_Project/im4MEC/runs/Datasplit_0_10_fold_by_patient_random/CONCH/cluster/full_dataset_small_random_hp1_90a8520_20250930-2347/149_checkpoint.pt"             # 注意力模型权重
+
+
+N_CLASSES: 4
+
+LABEL_MAP:
+  0: "Clear_Cell_Carcinoma"
+  1: "Ovarian_Endometrioid_Carcinoma"
+  2: "Ovarian_High_Grade_Serous_Carcinoma"
+  3: "Ovarian_Serous_Borderline"
+
+LABEL_MAP_SHORT:
+  0: "Clear"
+  1: "Endo"
+  2: "High"
+  3: "Border"
+
+LABEL_NAME_TO_INDEX:
+  Clear_Cell_Carcinoma: 0
+  Ovarian_Endometrioid_Carcinoma: 1
+  Ovarian_High_Grade_Serous_Carcinoma: 2
+  Ovarian_Serous_Borderline: 3
+
+subtypes:
+  # Mapping between long subtype names and short codes
+  long_to_short:
+    Clear_Cell_Carcinoma: "Clear"
+    Ovarian_Endometrioid_Carcinoma: "Endo"
+    Ovarian_High_Grade_Serous_Carcinoma: "High"
+    Ovarian_Serous_Borderline: "Border"
+
+  # Groups that enable the EC–HGSC mixed (transition) mode
+  mixture_enabled_groups: ["Endo", "High", "Endo_High", "High_Endo"]
+
+
+algorithm:
+  # --- Mahalanobis statistics ---
+  shrink_lambda: 0.20
+
+  # --- RBF weighting ---
+  tau_mode: "iqr"       # "iqr" | "constant"
+  tau_floor: 0.25
+  tau_constant: 1.0
+
+  # --- Transition detection ---
+  knn_distance: "cosine" # "cosine" | "l2"
+  knn_k: 30
+  imbalance_alpha: 0.5
+
+  # --- Transition density thresholds ---
+  ptrans_margin: 0.0
+  ptrans_abs_min: 0.04
+  conf_min: 0.55
+
+  # --- Outlier relaxation ---
+  outlier_relax_rel: 0.10
+  outlier_relax_abs: 4.0
+
+  # --- Patch filtering ---
+  min_patches_per_slide: 10
+
+  attn_model_size: "small"
+  input_feature_size: 512
+  display_level: 2
+  h5_scale: "cluster"                   # 从 H5 读哪一层：cluster/cell/tissue
+  palette: ["red","green","blue","orange","purple"]
+
+output:
+  # Directory naming and output file names
+  patch_csv_pattern: "{slide_id}_patch_assign.csv"
+  matrix_name: "slide_cluster_matrix.csv"
+  tiles_csv_name: "{slide_id}_spectrum_tiles.csv"      # 中间 tiles CSV 文件名
+  geojson_name: "{slide_id}_ATTN+SPECTRUM.geojson" 
