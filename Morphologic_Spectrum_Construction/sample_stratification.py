@@ -4,13 +4,6 @@ import re
 import yaml
 from collections import Counter
 
-# ---------------------
-# Global constants
-# ---------------------
-with open("config.yaml","r") as f:
-    config = yaml.safe_load(f)
-LABEL_MAP_SHORT = config["LABEL_MAP_SHORT"]
-
 
 def classify_stability(prediction_freqs: float) -> str:
     """Classify slide stability based on prediction accuracy frequency."""
@@ -22,7 +15,7 @@ def classify_stability(prediction_freqs: float) -> str:
         return 'Highly_Variable'
 
 
-def slide_result_single_model(each_slide_result_csv, slide_results):
+def slide_result_single_model(each_slide_result_csv, slide_results, label_map_short):
     """
     Aggregate prediction correctness and misclassification trends for each slide.
 
@@ -46,13 +39,13 @@ def slide_result_single_model(each_slide_result_csv, slide_results):
         corr = 1 if row['correctness'] is True else 0
         pred_label = int(row['pred'])  # predicted class index
         if sid not in slide_results:
-            slide_results[sid] = {'label': LABEL_MAP_SHORT[label]}
+            slide_results[sid] = {'label': label_map_short[label]}
             slide_results[sid]['pred_label'] = []
             slide_results[sid]['pred_corr'] = []
             slide_results[sid]['misclass'] = []
         # Record prediction result for this slide in this round
         slide_results[sid]['pred_corr'].append(corr)
-        slide_results[sid]['pred_label'].append(LABEL_MAP_SHORT[pred_label])
+        slide_results[sid]['pred_label'].append(label_map_short[pred_label])
         # If misclassified, record the misclassified class index
         if corr == 0:
             slide_results[sid]['misclass'].append(pred_label)
@@ -60,21 +53,65 @@ def slide_result_single_model(each_slide_result_csv, slide_results):
     return slide_results
 
 
-def main(args):
-    # Initialize output file path
-    slide_track_result_path = Path(args.out_dir) / "sample_stratification_result.csv"
-    slide_results = {}
+def run_sample_stratification(
+    test_result_root,
+    metadata_csv,
+    out_dir,
+    config_path=None,
+    glob_pattern="Datasplit_*_10_fold_by_patient*/each_slide_result/*_each_slide_result.csv",
+):
+    """
+    Aggregate per-slide prediction results across all splits/rounds and classify
+    slides into stability categories.
 
-    # Collect per-slide prediction result CSVs from different splits
-    test_result_basepath = Path(args.test_result_root)
+    Parameters
+    ----------
+    test_result_root : str or Path
+        Root directory containing all test results (e.g. ./test_result),
+        which should include subfolders like:
+        Datasplit_*/each_slide_result/*_each_slide_result.csv
+    metadata_csv : str or Path
+        Cohort metadata CSV file (must include 'Person ID', 'Tissue ID',
+        and 'SVS Filename' columns).
+    out_dir : str or Path
+        Output directory where 'sample_stratification_result.csv' will be written.
+    config_path : str or Path or None, optional
+        Path to YAML config file that defines LABEL_MAP_SHORT, e.g.
+        Morphologic_Spectrum_Construction/config.yaml.
+        If None, defaults to `config.yaml` next to this script.
+    glob_pattern : str, optional
+        Glob pattern (relative to test_result_root) for locating per-slide result
+        CSV files. Defaults to
+        'Datasplit_*_10_fold_by_patient*/each_slide_result/*_each_slide_result.csv'.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The final merged stratification DataFrame (also written to out_dir).
+    """
+    test_result_root = Path(test_result_root)
+    metadata_csv = Path(metadata_csv)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---------- Load config & LABEL_MAP_SHORT ----------
+    if config_path is None:
+        this_dir = Path(__file__).resolve().parent
+        config_path = this_dir / "config.yaml"
+    else:
+        config_path = Path(config_path)
+
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    label_map_short = config.get("LABEL_MAP_SHORT", {})
+
+    # ---------- Collect per-slide result CSVs ----------
     csv_files = [
         f.resolve()
-        for f in test_result_basepath.glob(
-            "Datasplit_*_10_fold_by_patient*/each_slide_result/*_each_slide_result.csv"
-        )
+        for f in test_result_root.glob(glob_pattern)
     ]
-
-    # Sort CSV files by split index (Datasplit_0, Datasplit_1, ...)
+    # Sort by split index in the directory name (Datasplit_0, Datasplit_1, ...)
     csv_files = sorted(
         csv_files,
         key=lambda x: int(
@@ -82,19 +119,28 @@ def main(args):
         ),
     )
 
+    if not csv_files:
+        raise RuntimeError(
+            f"[ERROR] No per-slide result CSVs found under {test_result_root} "
+            f"matching pattern: {glob_pattern}"
+        )
+
     csv_files_paths = "\n".join([str(file) for file in csv_files])
     print(f"[INFO] Collected each_slide_result.csv files:\n{csv_files_paths}")
 
-    # Process each result CSV
-    for csv in csv_files:
-        slide_results = slide_result_single_model(str(csv), slide_results)
+    # ---------- Aggregate predictions for each slide ----------
+    slide_results = {}
+    for csv_path in csv_files:
+        slide_results = slide_result_single_model(
+            str(csv_path), slide_results, label_map_short
+        )
 
-    # Build a DataFrame with per-slide prediction statistics
+    # ---------- Build DataFrame with per-slide statistics ----------
     rows = []
     for slide_id, results in slide_results.items():
         row = {"slide_id": slide_id, "label": results["label"]}
 
-        # Store predicted class names for each round
+        # store predicted class names for each round as pred_round_0, pred_round_1, ...
         pred_labels = results["pred_label"]
         for i, pred_lab in enumerate(pred_labels):
             row[f"pred_round_{i}"] = pred_lab
@@ -102,40 +148,53 @@ def main(args):
         predictions = results["pred_corr"]
         print(f"[DEBUG] {slide_id} predictions: {predictions}")
 
-        # Compute prediction accuracy across rounds
-        p_percent = sum(predictions) / len(predictions)
+        if len(predictions) == 0:
+            p_percent = 0.0
+        else:
+            p_percent = sum(predictions) / len(predictions)
+
         row["pred_acc"] = p_percent
 
-        # Count misclassification frequencies
-        misclass = results.get("misclass", [])
-        misclass_counter = Counter(misclass)
-        misclass_str = ", ".join([f"{cls}({cnt})" for cls, cnt in misclass_counter.items()])
+        # count misclassification frequencies (by numeric class id)
+        misclass_ids = results.get("misclass", [])
+        misclass_counter = Counter(misclass_ids)
+        misclass_str = ", ".join(
+            f"{cls}({cnt})" for cls, cnt in misclass_counter.items()
+        )
         row["misclass"] = misclass_str
 
-        # Assign stability category
+        # assign stability category
         row["stability"] = classify_stability(p_percent)
         rows.append(row)
 
     current_df = pd.DataFrame(rows)
 
-    # ----------------- Merge patient metadata ----------------- #
-    # Read metadata CSV (slide-level mapping to patient and tissue IDs)
-    person_info_path = Path(args.metadata_csv)
-    person_df = pd.read_csv(person_info_path)
+    # ---------- Merge patient metadata ----------
+    person_df = pd.read_csv(metadata_csv)
 
-    # Clean SVS filename (remove .svs suffix) and rename columns
+    # derive slide_id from SVS filename (remove .svs suffix)
     person_df["slide_id"] = person_df["SVS Filename"].str.replace(".svs", "", regex=False)
     person_df = person_df.rename(columns={"Person ID": "person_id"})[
         ["person_id", "Tissue ID", "slide_id"]
     ]
 
-    # Merge with current per-slide statistics
     merged_df = current_df.merge(person_df, on="slide_id", how="left")
 
-    # Save final stratification results
+    # ---------- Save final stratification results ----------
+    slide_track_result_path = out_dir / "sample_stratification_result.csv"
     merged_df.to_csv(slide_track_result_path, index=False, encoding="utf_8_sig")
     print(f"[INFO] Stratification results written to: {slide_track_result_path}")
 
+    return merged_df
+
+
+def main(args):
+    run_sample_stratification(
+        test_result_root=args.test_result_root,
+        metadata_csv=args.metadata_csv,
+        out_dir=args.out_dir,
+        config_path=args.config,
+    )
 
 if __name__ == "__main__":
     import argparse
@@ -159,6 +218,12 @@ if __name__ == "__main__":
         type=str,
         help="Output directory where the aggregated stratification CSV will be stored.",
         required=True,
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        help="Path to YAML config file (e.g. Morphologic_Spectrum_Construction/config.yaml). "
+            "If not provided, defaults to config.yaml next to this script.",
     )
     args = parser.parse_args()
 

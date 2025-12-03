@@ -335,10 +335,10 @@ def write_to_h5(file, asset_dict):
             dset[-val.shape[0] :] = val
 
 
-def load_encoder(device):
+def load_encoder(device,auth_token):
     from conch.open_clip_custom import create_model_from_pretrained
 
-    model, preprocess = create_model_from_pretrained('conch_ViT-B-16', "hf_hub:MahmoodLab/conch", hf_auth_token="")
+    model, preprocess = create_model_from_pretrained('conch_ViT-B-16', "hf_hub:MahmoodLab/conch", hf_auth_token=auth_token)
     model = model.to(device)
     model.eval()
 
@@ -367,6 +367,117 @@ def extract_features(model, preprocess, device, wsi, filtered_tiles, workers, ou
                 features = model.encode_image(batch, proj_contrast=False, normalize=False).cpu().numpy()
                 yield features, coords, tile_ids
 
+
+def preprocess_wsi_to_h5(
+    input_slide,
+    output_dir,
+    tile_size_microns,
+    out_size=224,
+    batch_size=512,
+    workers=4,
+    hf_auth_token=None,
+    device=None,
+    save_qc=True,
+):
+    """
+    End-to-end preprocessing of a single WSI:
+    - open slide
+    - segment tissue and generate tiles
+    - extract CONCH features into an HDF5 file
+    - optionally save a QC image
+
+    Returns a dict with paths and basic stats.
+    """
+    import os
+    from pathlib import Path
+
+    input_slide = Path(input_slide)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    slide_id, _ = os.path.splitext(os.path.basename(str(input_slide)))
+    wip_file_path = output_dir / f"{slide_id}_wip.h5"
+    output_file_path = output_dir / f"{slide_id}_features.h5"
+
+    print(f"Starts preprocessing {slide_id}")
+
+    if output_file_path.exists():
+        raise Exception(f"{output_file_path} already exists")
+
+    wsi = openslide.open_slide(str(input_slide))
+    mpp_factor = compute_mpp_scale_factor(wsi)
+
+    seg_level = wsi.get_best_level_for_downsample(64)
+    print(f"seg_level is {seg_level}")
+
+    start_time = time.time()
+    tissue_mask_scaled = create_tissue_mask(wsi, seg_level)
+    filtered_tiles = create_tissue_tiles(
+        mpp_factor, wsi, tissue_mask_scaled, tile_size_microns
+    )
+
+    qc_img = None
+    if save_qc:
+        from PIL import Image
+
+        qc_img = make_tile_QC_fig(filtered_tiles, wsi, seg_level, 2)
+        qc_img_target_width = 1920
+        qc_img = qc_img.resize(
+            (
+                qc_img_target_width,
+                int(qc_img.height / (qc_img.width / qc_img_target_width)),
+            )
+        )
+
+    print(
+        f"Finished creating {len(filtered_tiles)} tissue tiles in {time.time() - start_time:.2f}s"
+    )
+
+    if device is None:
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+    model, preprocess = load_encoder(device=device, auth_token=hf_auth_token)
+
+    generator = extract_features(
+        model,
+        preprocess,
+        device,
+        wsi,
+        filtered_tiles,
+        workers,
+        out_size,
+        batch_size,
+    )
+
+    start_time = time.time()
+    count_features = 0
+    with h5py.File(wip_file_path, "w") as file:
+        for i, (features, coords, tile_ids) in enumerate(generator):
+            count_features += features.shape[0]
+            write_to_h5(file, {"features": features, "coords": coords, "tile_ids": tile_ids})
+            print(
+                f"Processed batch {i}. Extracted features from "
+                f"{count_features}/{len(filtered_tiles)} tiles in {(time.time() - start_time):.2f}s."
+            )
+
+    os.rename(wip_file_path, output_file_path)
+
+    qc_img_path = None
+    if save_qc and qc_img is not None:
+        qc_img_path = output_dir / f"{slide_id}_{count_features}_features_QC.png"
+        qc_img.save(qc_img_path)
+        print(
+            f"Saved QC image to {qc_img_path} with {count_features} features "
+            f"in {(time.time() - start_time):.2f}s"
+        )
+
+    return {
+        "slide_id": slide_id,
+        "h5_path": output_file_path,
+        "qc_path": qc_img_path,
+        "n_tiles": len(filtered_tiles),
+        "n_features": count_features,
+    }
 
 if __name__ == "__main__":
     import argparse
@@ -408,80 +519,12 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Derive the slide ID from its name
-    slide_id, _ = os.path.splitext(os.path.basename(args.input_slide))
-    wip_file_path = os.path.join(args.output_dir, slide_id + "_wip.h5")
-    output_file_path = os.path.join(args.output_dir, slide_id + "_features.h5")
-
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    print(f"Starts to pre-processing {slide_id}")
-
-    # Check if the _features output file already exist. If so, we terminate to avoid
-    # overwriting it by accident. This also simplifies resuming bulk batch jobs.
-    if os.path.exists(output_file_path):
-        raise Exception(f"{output_file_path} already exists")
-
-    # Open the slide for reading
-    wsi = openslide.open_slide(args.input_slide)
-    mpp_factor = compute_mpp_scale_factor(wsi)
-
-    # Decide on which slide level we want to base the segmentation
-    seg_level = wsi.get_best_level_for_downsample(64)
-
-    print(f"seg_level is {seg_level}")
-
-    # Run the segmentation and  tiling procedure
-    start_time = time.time()
-    tissue_mask_scaled = create_tissue_mask(wsi, seg_level)
-    filtered_tiles = create_tissue_tiles(mpp_factor, wsi, tissue_mask_scaled, args.tile_size)
-    
-    # Build a figure for quality control purposes, to check if the tiles are where we expect them.
-    qc_img = make_tile_QC_fig(filtered_tiles, wsi, seg_level, 2)
-    qc_img_target_width = 1920
-    qc_img = qc_img.resize(
-        (qc_img_target_width, int(qc_img.height / (qc_img.width / qc_img_target_width)))
-    )
-    print(
-        f"Finished creating {len(filtered_tiles)} tissue tiles in {time.time() - start_time}s"
-    )
-
-    # Extract the rectangles, and compute the feature vectors
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-
-    model,preprocess = load_encoder(
-        device=device,
-    )
-
-    generator = extract_features(
-        model,
-        preprocess,
-        device,
-        wsi,
-        filtered_tiles,
-        args.workers,
-        args.out_size,
-        args.batch_size,
-    )
-    start_time = time.time()
-    count_features = 0
-    with h5py.File(wip_file_path, "w") as file:
-        for i, (features, coords, tile_ids) in enumerate(generator):
-            count_features += features.shape[0]
-            write_to_h5(file, {"features": features, "coords": coords, "tile_ids": tile_ids})
-            print(
-                f"Processed batch {i}. Extracted features from {count_features}/{len(filtered_tiles)} tiles in {(time.time() - start_time):.2f}s."
-            )
-
-    # Rename the file containing the patches to ensure we can easily
-    # distinguish incomplete bags of patches (due to e.g. errors) from complete ones in case a job fails.
-    os.rename(wip_file_path, output_file_path)
-
-    # Save QC figure while keeping track of number of features/tiles used since RBG filtering is within DataLoader.
-    qc_img_file_path = os.path.join(
-        args.output_dir, f"{slide_id}_{count_features}_features_QC.png"
-    )
-    qc_img.save(qc_img_file_path)
-    print(
-        f"Finished processing {slide_id} extracting {count_features} features in {(time.time() - start_time):.2f}s"
+    _ = preprocess_wsi_to_h5(
+        input_slide=args.input_slide,
+        output_dir=args.output_dir,
+        tile_size_microns=args.tile_size,
+        out_size=args.out_size,
+        batch_size=args.batch_size,
+        workers=args.workers,
+        hf_auth_token=None,  # or rely on HF_TOKEN env var
     )

@@ -7,11 +7,11 @@ MAX_TASKS_PER_GPU=2
 
 # label_file paths (assume 5 different datasets, paths can be stored in an array)
 label_files=(
-  Datasplit_0_10_fold_by_patient_random.csv
-  Datasplit_1_10_fold_by_patient_random.csv
-  Datasplit_2_10_fold_by_patient_random.csv
-  Datasplit_3_10_fold_by_patient_random.csv
-  Datasplit_4_10_fold_by_patient_random.csv
+  Datasplit_0_10_fold_by_patient.csv
+  Datasplit_1_10_fold_by_patient.csv
+  Datasplit_2_10_fold_by_patient.csv
+  Datasplit_3_10_fold_by_patient.csv
+  Datasplit_4_10_fold_by_patient.csv
 )
 
 # Output directory
@@ -70,6 +70,7 @@ for label_file in "${label_files[@]}"; do
           --input_feature_size 512 \
           --manifest "${label_file}" \
           --round ${round} \
+          --config ./config.yaml \
           &> "${dataset_output_dir}/train_round${round}.txt" &
       
       # Get python process pid

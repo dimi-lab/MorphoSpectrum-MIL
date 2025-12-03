@@ -16,42 +16,26 @@ import yaml
 import torch
 import torch.nn.functional as F
 from PIL import Image, ImageDraw, ImageFont
+from typing import Dict, Iterable, List, Optional, Tuple
 
 # ---------------- Model import (project layout aware) ----------------
-# Current script expected under ./independent_explain ; model.py under ./interpretability
 _THIS_DIR = Path(__file__).resolve().parent
 _PROJ_ROOT = _THIS_DIR.parent
-sys.path.insert(0, str(_PROJ_ROOT / "interpretability"))
-try:
-    from model import AttentionNet
-except Exception as e:
-    raise ImportError(
-        "Failed to import AttentionNet from ../interpretability/model.py. "
-        "Ensure the repo layout is:\n"
-        "  ./interpretability/model.py\n"
-        "  ./independent_explain/<this_script>.py\n"
-        f"Import error: {e}"
-    )
+if str(_PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJ_ROOT))
+from Morphologic_Spectrum_Construction.model import AttentionNet
 
 # ---------------------
 # Global constants
 # ---------------------
-with open("config.yaml","r") as f:
-    config = yaml.safe_load(f)
 
 SCALE_MARKER = {
     "tissue": "o",       # circle
     "cluster": "x",      # cross
     "cell": "s",         # square
 }
-
 DEVICE = torch.device("cuda")
-LOSS_FN = torch.nn.CrossEntropyLoss()
-N_CLASSES = config["N_CLASSES"]
-LABEL_MAP = config["LABEL_MAP"]
-LABEL_MAP_SHORT = config["LABEL_MAP_SHORT"]
-FEATURE_SIZE = config["algorithm"]["input_feature_size"]
-LABEL_LONG_SHORT = config["subtypes"]["long_to_short"]
+
 
 
 # --------------------- Model loading --------------------- #
@@ -70,28 +54,18 @@ def load_trained_model(device, checkpoint_path, model_size, input_feature_size, 
 
 
 # --------------------- Attention evaluation per class --------------------- #
-def evaluate_att_scores_single_slide(target_class_idx, feature_bag_path):
+def evaluate_att_scores_single_slide(target_class_idx, feature_bag_path,model,device):
     """
     Compute attention scores on a slide for a given target_class_idx.
     Returns attention scores, weights, feature embeddings, and tile IDs.
     """
-    input_feature_size = FEATURE_SIZE
-    checkpoint_path = config["paths"]["attn_checkpoint"]
-
-    model = load_trained_model(
-        device=DEVICE,
-        checkpoint_path=checkpoint_path,
-        model_size="small",
-        input_feature_size=input_feature_size,
-        n_classes=N_CLASSES,
-    )
 
     att_score_slide = {}
 
     test_features, tile_ids = getCONCHFeatures(feature_bag_path)
     att_score_slide["features"] = test_features.numpy()
 
-    test_features = test_features.to(DEVICE)
+    test_features = test_features.to(device)
     A, h, classifiers, Y_prob, Y_hat = predict_attention_matrix(model, test_features)
 
     # Attention score for this target class
@@ -169,17 +143,19 @@ def topk_by_cumsum(scores, ratio=0.9):
 
 
 # --------------------- Extract patches for all predictions --------------------- #
-def process_slide_for_all_preds(h5_path):
+def process_slide_for_all_preds(h5_path,model, device, n_classes, topk_ratio):
     results = []
 
-    for pred_idx in range(N_CLASSES):
+    for pred_idx in range(n_classes):
         att_score_slide, tile_ids, _, _ = evaluate_att_scores_single_slide(
             target_class_idx=pred_idx,
-            feature_bag_path=h5_path
+            feature_bag_path=h5_path,
+            model=model,
+            device=device,
         )
 
         scores = att_score_slide["att_score"]
-        top_k_centers = topk_by_cumsum(scores, ratio=0.9)
+        top_k_centers = topk_by_cumsum(scores, ratio=topk_ratio)
 
         top_k_ids = list(np.array(tile_ids)[top_k_centers])
         all_scores  = att_score_slide["att_score"]
@@ -195,61 +171,162 @@ def process_slide_for_all_preds(h5_path):
     return results
 
 
-# --------------------- Main --------------------- #
-def main():
+def run_high_contri_extraction(
+    config_path: str,
+    manifest_path: Path,
+    attn_checkpoint: Path,
+    h5_base_path: Path,
+    output_dir: Path,
+    topk_ratio: float = 0.9,
+    slide_ids: Optional[Iterable[str]] = None,
+) -> Path:
+    """
+    Extract high-contribution patches for all independent slides.
 
-    h5_base_path = config["paths"]["h5_base"]
+    Args:
+        config: loaded YAML config dict (used for label mappings, N_CLASSES, etc.).
+        manifest_path: CSV listing independent slides (contains 'SVS Filename', 'Subtype', ...).
+        attn_checkpoint: path to full-data AttentionNet checkpoint.
+        h5_base_path: directory containing {slide_id}_features.h5 files.
+        output_dir: directory where high-contribution patch CSVs will be written.
+        device: 'cuda' or 'cpu'.
+        topk_ratio: cumulative contribution ratio for selecting top-K patches (default 0.9).
+        slide_ids: optional iterable of slide_ids to restrict processing; if None, process all slides.
 
-    result_base_path = Path("./high_contri_path_independent")
-    result_base_path.mkdir(parents=True, exist_ok=True)
+    Returns:
+        Path to unified CSV file: output_dir / 'high_attened_patches_indep_data.csv'
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    coords_csv_path = result_base_path / f"high_attened_patches_indep_data.csv"
-    with open(coords_csv_path, 'w', newline='') as csvfile:
 
+    # ------ Static settings from config ------
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    n_classes = int(config["N_CLASSES"])
+    label_map_short: Dict[int, str] = config["LABEL_MAP_SHORT"]
+    label_long_short: Dict[str, str] = config["subtypes"]["long_to_short"]
+    input_feature_size = int(config["algorithm"]["input_feature_size"])
+
+    # ------ Load model once ------
+    print(f"[INFO] Loading AttentionNet from: {attn_checkpoint}")
+    model = load_trained_model(
+        device=DEVICE,
+        checkpoint_path=Path(attn_checkpoint),
+        model_size="small",
+        input_feature_size=input_feature_size,
+        n_classes=n_classes,
+    )
+
+    # ------ Open unified CSV writer ------
+    coords_csv_path = output_dir / "high_attened_patches_indep_data.csv"
+    with open(coords_csv_path, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(['slide_id','label','pred','tile_id','weight','score','embed'])
+        writer.writerow(["slide_id", "label", "pred", "tile_id", "weight", "score", "embed"])
 
-        # Load test metadata CSV
-        result_df = pd.read_csv(config["paths"]["manifest"])
+        # Load manifest CSV
+        result_df = pd.read_csv(manifest_path)
+
+        # Optional: restrict to selected slide_ids
+        if slide_ids is not None:
+            slide_ids_set = set(str(s) for s in slide_ids)
+            result_df = result_df[result_df["SVS Filename"].apply(
+                lambda x: str(x).replace(".svs", "") in slide_ids_set
+            )]
 
         for _, row in result_df.iterrows():
-
-            slide_id = str(row['SVS Filename']).replace('.svs', '')
+            slide_id = str(row["SVS Filename"]).replace(".svs", "")
             subtype_long = str(row["Subtype"]).strip()
 
             try:
-                label_short = LABEL_LONG_SHORT[subtype_long]
+                label_short = label_long_short[subtype_long]
             except Exception:
-                raise ValueError(f"Subtype '{subtype_long}' not found in config['subtypes']['long_to_short'].")
+                raise ValueError(
+                    f"Subtype '{subtype_long}' not found in config['subtypes']['long_to_short']."
+                )
 
-            h5_path = f"{h5_base_path}/{slide_id}_features.h5"
+            h5_path = Path(h5_base_path) / f"{slide_id}_features.h5"
 
-            print(f"\n{'='*50}")
-            print(f"[START] Processing slide {slide_id} from {h5_path} — extracting high-contribution patches for each predicted class")
+            print("\n" + "=" * 50)
+            print(
+                f"[START] Processing slide {slide_id} from {h5_path} — "
+                f"extracting high-contribution patches for each predicted class"
+            )
 
-            per_pred_results = process_slide_for_all_preds(h5_path=h5_path)
+            per_pred_results = process_slide_for_all_preds(
+                h5_path=h5_path,
+                model=model,
+                device=DEVICE,
+                n_classes=n_classes,
+                topk_ratio=topk_ratio,
+            )
 
             for (pred_idx, top_k_ids, top_k_scores, top_k_weights, top_k_features) in per_pred_results:
-                pred_label_short = LABEL_MAP_SHORT[pred_idx]
+                print(f"pred_idx={pred_idx}")
+                pred_label_short = label_map_short[pred_idx] if isinstance(label_map_short, dict) else label_map_short[pred_idx]
                 for i, item_id in enumerate(top_k_ids):
                     feature_vec = top_k_features[i]
-                    feature_str = ';'.join(map(str, feature_vec))
-                    weight = top_k_weights[i]
-                    atten_score = top_k_scores[i]
-                    writer.writerow([
-                        slide_id, label_short, pred_label_short,
-                        item_id, weight, atten_score, feature_str
-                    ])
+                    feature_str = ";".join(map(str, feature_vec))
+                    weight = float(top_k_weights[i])
+                    atten_score = float(top_k_scores[i])
+                    writer.writerow(
+                        [
+                            slide_id,
+                            label_short,
+                            pred_label_short,
+                            item_id,
+                            weight,
+                            atten_score,
+                            feature_str,
+                        ]
+                    )
 
             print(f"[DONE] Slide {slide_id} completed")
-    
+
+    # ------ Split unified CSV by label ------
     df_all = pd.read_csv(coords_csv_path)
     for label, subset in df_all.groupby("label"):
-        out_name = result_base_path / f"independent_{label}.csv"
+        out_name = output_dir / f"independent_{label}.csv"
         subset.to_csv(out_name, index=False)
         print(f"[INFO] Saved {out_name}, rows={len(subset)}")
 
+    return coords_csv_path
+
+# --------------------- Main --------------------- #
+def main(args):
+
+    run_high_contri_extraction(
+        config=args.config,
+        manifest_path=Path(args.manifest),
+        attn_checkpoint=Path(args.attn_checkpoint),
+        h5_base_path=Path(args.h5_base),
+        output_dir=Path(args.output_dir),
+        topk_ratio=args.topk_ratio,
+        slide_ids=args.slides,
+    )
     
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Extract high-contribution patches for independent slides."
+    )
+    parser.add_argument("--config", type=str, required=True,
+                        help="Path to config.yaml (for label mappings, algorithm params).")
+    parser.add_argument("--manifest", type=str, required=True,
+                        help="Path to independent_svs_file_mapping.csv.")
+    parser.add_argument("--attn-checkpoint", type=str, required=True,
+                        help="Path to full-data AttentionNet checkpoint (.pt).")
+    parser.add_argument("--h5-base", type=str, required=True,
+                        help="Directory containing {slide_id}_features.h5 files.")
+    parser.add_argument("--output-dir", type=str, required=True,
+                        help="Directory to save high-contribution patch CSVs.")
+    parser.add_argument("--topk-ratio", type=float, default=0.9,
+                        help="Cumulative contribution ratio for selecting top-K patches.")
+    parser.add_argument(
+        "--slides",
+        nargs="*",
+        default=None,
+        help="Optional list of slide_ids to process (default: all slides in manifest).",
+    )
+    args = parser.parse_args()
+    main(args)

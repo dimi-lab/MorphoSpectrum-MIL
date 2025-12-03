@@ -1,31 +1,22 @@
-# Readme
+# MorphoXAI – Stage 1: Morphologic Spectrum Construction
 
-## Repository Execution Flow
+## Pipeline Overview
 
-The figure below provides a **macroscopic view of the entire repository workflow**.  
-It summarizes how different scripts are connected, the inputs they consume, and the outputs they produce.  
+The diagram below provides a high-level overview of the Stage 1 workflow.
+It illustrates how individual scripts in this repository interact, the inputs
+they consume, and the outputs they produce. Together, these components form
+the complete pipeline for morphologic spectrum construction. A runnable demo of Stage 1 workflow is provided in the `notebooks/morphologic_spectrum_construction.ipynb`.
 
-![Execution Flow of Global Explanation Generation](Execution_Flow_of_Global_Explanation_Generation.png)
+<p align="center">
+  <img src="Execution_Flow_of_Global_Explanation_Generation.png" alt="Execution Flow of Global Explanation Generation" width="40%">
+</p>
 
-## Install dependencies
-First, create the base conda environment (without CONCH):
 
-```
-conda env create -f environment.yml
-conda activate MorphoSpec
-```
-
-Then, install CONCH from GitHub as a post-installation step:
-
-```
-pip install git+https://github.com/Mahmoodlab/CONCH.git
-```
-
-## Data Preparation
+## Step 1 – Data Preparation
 
 ### 1. Purpose of the script
 
-The script `10_fold_data_split_by_patient.py` prepares cross-validation datasets for subsequent model training.
+The script `data_split_by_patient.py` creates the patient-level train/test splits used in MorphoXAI’s prediction-stability–based sample stratification procedure.
 
 - For a given cohort, the patient list is randomly shuffled `split_num` times to generate multiple independent datasets.
 - Within each dataset, all slides are grouped by patient and then partitioned into `fold_num` folds.
@@ -59,7 +50,7 @@ An example can be found in `./Data_Split/output_svs_file_mapping.csv`.
 ### 3. Example run
 
 ```
-python -u 10_fold_data_split_by_patient.py \
+python -u data_split_by_patient.py \
     --mode random \
     --split_num 5 \
     --fold_num 10 \
@@ -71,7 +62,7 @@ python -u 10_fold_data_split_by_patient.py \
     --label_config ./config.yaml
 ```
 
-This will create 5 shuffled splits, each with 10 folds, and save the CSV outputs in `./Data_Split`. Refer to the code in `10_fold_data_split_by_patient.py` for a full explanation of all command line arguments.
+This will create 5 shuffled splits, each with 10 folds, and save the CSV outputs in `./Data_Split`. Refer to the code in `data_split_by_patient.py` for a full explanation of all command line arguments.
 
 ------
 
@@ -89,11 +80,11 @@ In this file, each row corresponds to a slide, with the following key columns:
 
 This format allows downstream training scripts to easily load the correct slides for each shuffle and fold.
 
-## Converting each WSI into a bag of feature vectors
+## Step 2 – Converting each WSI into a bag of feature vectors
 
 ### 1. Purpose of the script
 
-Before training the CLAM model, each WSI in the cohort should be converted into a bag of feature vectors using a feature extractor. The script `preprocess.py` uses CONCH to embed each tissue patch and saves the result to an `.h5` file. A corresponding QC image is also generated with the suffix `_features_QC.png`.
+Before model training, each WSI in the cohort should be converted into a bag of feature vectors using a feature extractor. The script `preprocess.py` uses CONCH to embed each tissue patch and saves the result to an `.h5` file. A corresponding QC image is also generated with the suffix `_features_QC.png`.
 
 **Note on encoder origin:** this preprocessing code contains a fork of [AIRMEC/im4MEC](https://github.com/AIRMEC/im4MEC/tree/main). The original used a **MoCo** encoder; here we use **CONCH**.
 
@@ -130,23 +121,23 @@ model, preprocess = create_model_from_pretrained(
 For each processed WSI, two types of files are produced in the specified `--output_dir`:
 
 1. **Feature file (`.h5`)**
-   - Filename: `{WSI_ID}.h5`
+   - Filename: `{Slide_ID}.h5`
    - Contents:
      - A dataset of feature vectors, one per extracted patch.
      - Each vector corresponds to the embedding produced by the CONCH encoder.
      - Patch metadata (e.g., tile coordinates and dimensions) are also stored to allow mapping back to the WSI.
 2. **Quality Control image (`_features_QC.png`)**
-   - Filename: `{WSI_ID}_features_QC.png`
+   - Filename: `{Slide_ID}_features_QC.png`
    - A downsampled thumbnail of the WSI with patch locations overlaid.
    - Provides a quick visual check to ensure that tiling and patch embedding were performed correctly.
 
 These outputs together form a **bag-of-features representation** for each WSI, which can be directly used as input to downstream MIL models such as CLAM.
 
-## MIL Training
+## Step 3 – MIL Training
 
 ### 1. Purpose of the script
 
-To train CLAM for final WSI-level prediction, use `train_early_stopping.py`. This script implements a k-fold cross-validation routine and applies early stopping. The best model checkpoint for every fold is saved in ` ./runs`.
+MorphoXAI adopts the CLAM framework as the MIL model for Stage 1. To train CLAM for WSI-level prediction, use `train_early_stopping.py`. This script implements a k-fold cross-validation routine and applies early stopping. The best model checkpoint for every fold is saved in ` ./runs`.
 
 ### 2. Input
 
@@ -167,14 +158,12 @@ for round in $(seq 0 $((n_folds-1))); do
   python -u train_early_stopping.py \
     --manifest "${label_file}" \
     --feature_bag_dir feature_bags \
-    --input_feature_size 512 \
+    --config ./config.yaml \
     --round "${round}" >> ./Train_Output.txt 2>&1
 done
 ```
 
-> **Note**: `--input_feature_size` must match the dimensionality of the features produced by your extractor model (512 for CONCH). See `train_early_stopping.py` for details on the other arguments.
-
-All training hyperparameters are read from `config.yml`. We provide a reference configuration file with reasonable defaults, but users are encouraged to adjust these values to fit their own dataset and experiments.
+> **Note**: All training hyperparameters are read from `config.yml`. We provide a reference configuration file with reasonable defaults, but users are encouraged to adjust these values to fit their own dataset and experiments.
 
 ### 4. Outputs (Model Training)
 
@@ -200,9 +189,9 @@ Running `train_early_stopping.py` produces the following outputs:
 
 We provide a helper shell script `run_all_splits.sh` in this repository, which launches training for all splits and folds across multiple GPUs, automatically managing GPU assignment and logging. Use this script when you want to launch all splits/folds in parallel across the available GPUs, without manually scheduling each job.
 
-**Notes:** This training code contains a fork of [AIRMEC/im4MEC](https://github.com/AIRMEC/im4MEC/tree/main). We extended it by adding **early stopping** support. The script also retains the argument `--full_training`, which allows retraining the model on the entire **training + validation set** by specifying a hyperparameter index. Our pipeline does **not** make use of this option, but we kept it available for completeness.
+**Notes:** This training code contains a fork of [AIRMEC/im4MEC](https://github.com/AIRMEC/im4MEC/tree/main). We extended it by adding **early stopping** support. The script also retains the argument `--full_training`, which allows retraining the model on the entire **training + validation set** by specifying a hyperparameter index. 
 
-## MIL Testing
+## Step 4 – MIL Testing
 
 The script `test.py` evaluates trained MIL models on the held-out test sets produced during cross-validation.
 
@@ -245,6 +234,7 @@ python -u test.py \
     --manifest ${label_file} \
     --feature_bag_dir feature_bags \
     --checkpoint_dir ${check_dir} \
+    --config ./config.yaml \
     --round_num 10 >> "${test_log}" 2>&1 &
 wait
 ```
@@ -269,7 +259,7 @@ All outputs are organized under `./test_result/{dataset_name}/` for each dataset
 - **Confusion matrix figure** (under `./test_result/{dataset_name}/`):
   - `confusion_matrix.png`: heatmap of the aggregated confusion matrix.
 
-## Sample Stratification
+## Step 5 – Sample Stratification
 
 ### 1. Purpose of the script
 
@@ -286,7 +276,7 @@ It works by collecting `*_each_slide_result.csv` files generated during MIL mode
 ### 2. Inputs
 
 - **`--test_result_root`**: Root directory containing all test results (e.g., `./test_result`), which should include subfolders like
-   `Datasplit_*/each_slide_result/*_each_slide_result.csv`.
+  `Datasplit_*/each_slide_result/*_each_slide_result.csv`.
 - **`--metadata_csv`**: Cohort metadata CSV file (must include `Person ID`, `Tissue ID`, and `SVS Filename` columns).  See [Input Metadata CSV format](#1-input-metadata-csv-format) for details on how to prepare this file.
 - **`--out_dir`**: Output directory where the aggregated stratification CSV will be written.
 
@@ -296,6 +286,7 @@ It works by collecting `*_each_slide_result.csv` files generated during MIL mode
 python -u sample_stratification.py \
   --test_result_root ./test_result \
   --metadata_csv ./Data_Split/output_svs_file_mapping.csv \
+  --config ./config.yaml \
   --out_dir ./test_result
 ```
 
@@ -333,7 +324,7 @@ This will aggregate all per-slide results under `./test_result`, merge them with
 
   - merged patient metadata (`person_id`, `Tissue ID`)
 
-## High-Contribution Patch Extraction
+## Step 6 – High-Contribution Patch Extraction
 
 ### 1. Purpose of the Script
 
@@ -372,25 +363,30 @@ python -u high_contribution_patches_extraction.py \
     --output_dir ./test_result/ \
     --subtype Clear \
     --stability Consistently_Correct \
-    --topk_threshold 0.9
+    --topk_threshold 0.9 \
+    --config ./config.yaml \
+    --runs_root ./runs, \
+    --datasplit_root ./Data_Split, \
+    --n_splits 5, \
+    --n_folds 10, 
 ```
 
-## High-Contribution Patches Clustering
+## Step 7 – High-Contribution Patches Clustering
 
 ### 1. Purpose
 
 The script `high_contribution_patches_cluster.py` clusters **high-contribution patches** (with precomputed embeddings and attention weights) and optionally exports patch coordinates for downstream annotation in **QuPath**. It supports two modes:
 
 - **`evaluate_clusters`**
-   Runs *consensus clustering* on a micro-clustered subset of embeddings to **score candidate numbers of clusters (`k`)**.
-   Outputs:
+  Runs *consensus clustering* on a micro-clustered subset of embeddings to **score candidate numbers of clusters (`k`)**.
+  Outputs:
   - `consensus_k_selection.csv` — table of `k` vs. cophenetic correlation (higher is better).
   - `consensus_heatmap_k{k}.png` — consensus matrices visualizing clustering stability.
 - **`export`**
-   Uses your chosen **`--n_clusters`** to perform hierarchical clustering on all patches, assigns each patch a **hierarchical cluster label (`hc_label`)**, and exports:
+  Uses your chosen **`--n_clusters`** to perform hierarchical clustering on all patches, assigns each patch a **hierarchical cluster label (`hc_label`)**, and exports:
   - `cluster_slide_summary.csv` — per-cluster counts by slide / person (helps sampling for annotation).
   - `slide_results/<slide_id>_hc_coords.csv` — **patch coordinates** per slide  ready for **QuPath** import:
-     `slide_id, tile_id, hc_label, x, y, width, height`
+    `slide_id, tile_id, hc_label, x, y, width, height`
 
 ### 2. Example run
 
@@ -423,6 +419,94 @@ This happens because the FAISS package you installed was compiled against a newe
 ```bash
 conda env create -f environment.cpu.yml
 ```
+
+## **Step 8 – Export Morphologic Spectrum Stats**
+
+### **1. Purpose**
+
+In earlier steps of Stage 1, we extracted high-contribution patches from the full-data model (Step 6) and clustered these patches to construct the model’s Morphologic Spectrum (Step 7).
+
+The goal of Step 8 is to compute all essential statistical parameters that characterize this spectrum— including cluster means, covariance structures, distance thresholds, and statistics related to any transitional morphologic patterns and export them as a single consolidated stats file.
+
+This file will be used in MorphoXAI Stage 2 to generate spectrum-based explanations for the predictions of the full-data model on an independent test set, enabling precise identification of which morphologic patterns the model relies on in high-contribution regions.
+
+------
+
+### **2. Inputs**
+
+Step 8 operates on outputs from Steps 6 and 7 of Stage 1.
+
+#### **(1) High-contribution patch embeddings for core subtypes (from Step 6)**
+
+Typical files:
+
+```
+`{subtype}_{stability}.csv`
+```
+
+Each CSV contains:
+
+- `slide_id`
+- `tile_id`
+- `embed` (semicolon-separated CONCH embeddings)
+
+------
+
+#### **(2) Cluster assignments for core subtypes (from Step 7)**
+
+Typical directory structure:
+
+```
+<Subtype>/slide_results/
+    <slide_id>_hc_coords.csv
+```
+
+Each CSV contains:
+
+- `slide_id`
+- `tile_id`
+- `cluster_name`
+- patch coordinates (`x`, `y`, `w`, `h`)
+
+------
+
+#### **(3) Embeddings and cluster files for transitional morphologic patterns**
+
+If transitional morphologic patterns are identified between certain subtypes, their corresponding **embeddings** and **cluster CSV files** can also be provided and incorporated into the spectrum statistics.
+
+------
+
+#### **(4) Algorithm settings**
+
+Parameters from the `algorithm` section of `config.yaml`, including:
+
+- covariance shrinkage
+- τ settings for RBF weighting
+- parameters for transitional-pattern detection
+- outlier relaxation parameters, etc.
+
+------
+
+### **3. Output**
+
+Step 8 exports one consolidated file summarizing all morphologic-spectrum statistics: **`morphologic_spectrum_stats.pkl`**
+
+This file contains:
+
+- **`stats`** – per-cluster statistical parameters:
+  - `mu`: cluster mean embedding
+  - `invS`: inverse of the shrunk covariance matrix
+  - `r95`: 95% Mahalanobis distance threshold
+  - `tau`: RBF weighting scale parameter
+- **`cluster_list`** – ordered list of all cluster names
+- **`knn_bank`** – data structure for detecting transitional morphologic patterns:
+  - embedding bank
+  - cluster labels
+  - flags indicating transitional patterns
+  - cluster frequency statistics
+  - transitional proportion (`pi_trans`)
+
+The exported file is directly loaded in MorphoXAI Stage 2 for efficient and reproducible spectrum mapping of independent test slides.
 
 ## MorphoCA: QuPath Extension for Cluster Visualization and Annotation
 
@@ -459,6 +543,7 @@ In addition to visualization, MorphoCA provides an **interactive annotation pane
 This functionality supports both **model interpretability studies** and **morphological spectrum analysis**.
 
 The following figure illustrates the annotation workflow in MorphoCA:
+
 ![MorphoCA interface](MorphoCA_interface.png)
 ------
 
@@ -471,4 +556,3 @@ This repository provides a ready-to-use plugin package: **`qupath-extension-Morp
 2. Restart QuPath if needed.
 
 **Note:** The CSV file being imported must correspond to the currently opened slide (for *Create File Selections*) or to slides included in the project (for *Create Project Selections*).
-

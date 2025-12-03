@@ -40,3 +40,11 @@ hp1:
   # Other settings
   sampling_method: "random"
 
+algorithm:
+  # --- Mahalanobis statistics ---
+  shrink_lambda: 0.20
+
+  # --- RBF weighting ---
+  tau_mode: "iqr"       # "iqr" | "constant"
+  tau_floor: 0.25
+  tau_constant: 1.0

@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader, TensorDataset
 import os
 import yaml
 import glob
-from model import AttentionNet
 import numpy as np
 import h5py
 import random
@@ -14,9 +13,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, f1_score
-from train_early_stopping import FeatureBagsDataset
-
-
 from torch.utils.data import (
     DataLoader,
     Dataset,
@@ -28,21 +24,22 @@ from sklearn.metrics import roc_curve, auc, roc_auc_score, confusion_matrix, Con
 from sklearn.preprocessing import label_binarize
 from sklearn.metrics import precision_recall_curve, average_precision_score
 
+try:
+    from .model import AttentionNet  
+except ImportError:
+    from model import AttentionNet 
+try:
+    from .train_early_stopping import FeatureBagsDataset  
+except ImportError:
+    from train_early_stopping import FeatureBagsDataset 
+
 # ---------------------
 # Global constants
 # ---------------------
-with open("config.yaml","r") as f:
-    config = yaml.safe_load(f)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[INFO] Using device: {DEVICE}")
-
 LOSS_FN = torch.nn.CrossEntropyLoss()
-N_CLASSES = config["N_CLASSES"]
-LABEL_MAP = config["LABEL_MAP"]
-HP_INDEX = config["HP_INDEX"]
-INPUT_FEATURE_SIZE = config["INPUT_FEATURE_SIZE"]
-
 plt.rcParams['axes.labelsize'] = 14  # axis label font size
 plt.rcParams['xtick.labelsize'] = 14  # X-axis tick font size
 plt.rcParams['ytick.labelsize'] = 14  # Y-axis tick font size
@@ -52,7 +49,6 @@ def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
-
 
 def collate(batch):
     img = torch.cat([item[0] for item in batch], dim=0)
@@ -131,7 +127,7 @@ def calculate_sen_spec(labels, preds, n_classes):
     
     return sensitivities, specificities, f1_scores
 
-def load_model_from_checkpoint(hp, round_idx, checkpoint_dir,input_feature_size,n_classes,device):
+def load_model_from_checkpoint(hp, round_idx, checkpoint_dir,input_feature_size,n_classes,device, config):
 
     test_cfg = config[hp]
     model_size = test_cfg.get("model_size")
@@ -183,10 +179,10 @@ def load_model_from_checkpoint(hp, round_idx, checkpoint_dir,input_feature_size,
     model = model.to(device)
     return model
 
-def get_slide_level_results(hp, round_idx, labels, preds, probs, test_df):
+def get_slide_level_results(hp, round_idx, labels, preds, probs, test_df, label_map):
 
-    name_label = [LABEL_MAP[int(x)] for x in list(labels)]
-    name_pred = [LABEL_MAP[int(x)] for x in list(preds)]  
+    name_label = [label_map[int(x)] for x in list(labels)]
+    name_pred = [label_map[int(x)] for x in list(preds)]  
     true_false=["True" if i==j else "False" for i, j in zip(labels, preds)]
 
     formated_probs = np.array([[f"{prob:.2f}" for prob in row] for row in probs])
@@ -328,14 +324,14 @@ def plot_roc_curves_all(
     plt.savefig(save_path)
     plt.close()
 
-def plot_confusion_matrix_from_csv(csv_path, save_dir):
+def plot_confusion_matrix_from_csv(csv_path, save_dir, label_map):
 
     df = pd.read_csv(csv_path)
     
     y_true = df['label'].astype(int)
     y_pred = df['pred'].astype(int)
     
-    labels_order = sorted(list(LABEL_MAP.keys())) if isinstance(list(LABEL_MAP.keys())[0], int) else sorted(df['label'].unique().astype(int).tolist())
+    labels_order = sorted(list(label_map.keys())) if isinstance(list(label_map.keys())[0], int) else sorted(df['label'].unique().astype(int).tolist())
     cm = confusion_matrix(y_true, y_pred,labels=labels_order)
     
     plt.figure(figsize=(8, 6))
@@ -373,15 +369,64 @@ def random_baseline_by_distribution_f1(y_true, classes, n_trials=50):
 
     return result
 
-def main(args):
-    round_num = args.round_num
-    test_set_path = args.manifest
-    dataset_name = test_set_path.split('/')[-1].split('.csv')[0]
-    input_feature_size = INPUT_FEATURE_SIZE
 
-    
-    #get checkpoint path
-    checkpoint_path = Path(args.checkpoint_dir) / dataset_name
+def evaluate_all_rounds(
+    manifest,
+    feature_bag_dir,
+    checkpoint_dir,
+    round_num,
+    workers=4,
+    config_path=None,
+):
+    """
+    Evaluate trained MIL models across all CV rounds for a single dataset.
+
+    Parameters
+    ----------
+    manifest : str or Path
+        CSV file produced by the data preparation step (Datasplit_*.csv).
+    feature_bag_dir : str or Path
+        Directory where all *_features.h5 files are stored.
+    checkpoint_dir : str or Path
+        Root directory where all checkpoints from training are stored (e.g. ./runs).
+    round_num : int
+        Number of CV rounds to evaluate (e.g. 10 for 10-fold CV).
+    workers : int, default=4
+        Number of DataLoader workers.
+    config_path : str or Path, optional
+        Path to YAML config file (e.g. Morphologic_Spectrum_Construction/config.yaml).
+        If None, defaults to config.yaml in the same directory as this script.
+
+    Side effects
+    ------------
+    - Writes per-slide, per-round, and aggregated metrics under ./test_result/{dataset_name}/
+    - Writes ROC curve figures under ./ROC_Curve/{dataset_name}/
+    - Plots and saves a confusion matrix.
+    """
+    manifest = str(manifest)
+    feature_bag_dir = str(feature_bag_dir)
+    checkpoint_dir = Path(checkpoint_dir)
+
+    # --------- load config ----------
+    if config_path is None:
+        this_dir = Path(__file__).resolve().parent
+        config_path = this_dir / "config.yaml"
+    else:
+        config_path = Path(config_path)
+
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    n_classes = config["N_CLASSES"]
+    label_map = config["LABEL_MAP"]
+    hp = config["HP_INDEX"]
+    input_feature_size = config["INPUT_FEATURE_SIZE"]
+
+    # --------- paths / dataset name ----------
+    test_set_path = manifest
+    dataset_name = Path(test_set_path).stem
+
+    checkpoint_path = checkpoint_dir / dataset_name
 
     roc_path = Path(f"./ROC_Curve/{dataset_name}")
     roc_path.mkdir(parents=True, exist_ok=True)
@@ -389,112 +434,98 @@ def main(args):
     final_result_path = Path(f"./test_result/{dataset_name}")
     final_result_path.mkdir(parents=True, exist_ok=True)
 
-    each_slide_result = Path(f"./test_result/{dataset_name}/each_slide_result")
+    each_slide_result = final_result_path / "each_slide_result"
     each_slide_result.mkdir(parents=True, exist_ok=True)
     
     df = pd.read_csv(test_set_path)
 
-    # ------------------------- Testing Loop for each hp -------------------------
-    hp = HP_INDEX
     print(f"[INFO] Start testing model for hyperparameter set {hp}")
-    
-    # 初始化存储容器
-    all_fpr = {class_idx: [] for class_idx in range(N_CLASSES)} 
-    all_tpr = {class_idx: [] for class_idx in range(N_CLASSES)}
-    all_AUC = {class_idx: [] for class_idx in range(N_CLASSES)}
-    all_sen = {class_idx: [] for class_idx in range(N_CLASSES)}
-    all_spe = {class_idx: [] for class_idx in range(N_CLASSES)}
-    all_pr = {class_idx: [] for class_idx in range(N_CLASSES)}
-    all_f1 = {class_idx: [] for class_idx in range(N_CLASSES)}
-    all_random_f1 ={class_idx: [] for class_idx in range(N_CLASSES)} # store random guess baseline
-    
-    # ------------------------- Fold Loop -------------------------
-    for round_idx in range(round_num): 
 
+    # containers for metrics
+    all_fpr = {class_idx: [] for class_idx in range(n_classes)} 
+    all_tpr = {class_idx: [] for class_idx in range(n_classes)}
+    all_AUC = {class_idx: [] for class_idx in range(n_classes)}
+    all_sen = {class_idx: [] for class_idx in range(n_classes)}
+    all_spe = {class_idx: [] for class_idx in range(n_classes)}
+    all_pr = {class_idx: [] for class_idx in range(n_classes)}
+    all_f1 = {class_idx: [] for class_idx in range(n_classes)}
+    all_random_f1 = {class_idx: [] for class_idx in range(n_classes)}
+
+    # --------- per-round evaluation loop ----------
+    for round_idx in range(round_num): 
         print(f"[INFO] Testing hp set {hp}, round {round_idx}")
 
-        #load model
-        model = load_model_from_checkpoint(hp, round_idx, checkpoint_path, input_feature_size,N_CLASSES,DEVICE)
+        # load model
+        model = load_model_from_checkpoint(
+            hp, round_idx, checkpoint_path, input_feature_size, n_classes, DEVICE, config
+        )
 
-        # get test set for this round and convert to feature bags
-        test_set = df[df[f'round-{round_idx}']=='testing']
-        test_split = FeatureBagsDataset(test_set,args.feature_bag_dir)
+        # test set for this round
+        test_set = df[df[f'round-{round_idx}'] == 'testing']
+        test_split = FeatureBagsDataset(test_set, feature_bag_dir)
 
-        test_loader = define_data_sampling(
-                    test_split,
-                    workers=args.workers,
-                )
+        test_loader = define_data_sampling(test_split, workers=workers)
         class_names = get_class_names(test_set)
 
-        # run model and evaluate predictions
         preds, probs, labels, test_loss = evaluate_model(
-                        model, test_loader, N_CLASSES, LOSS_FN, DEVICE
-                    )
-        print(f"preds is {preds}\n")
+            model, test_loader, n_classes, LOSS_FN, DEVICE
+        )
 
-        print(f"label is {labels}\n")
         unique_labels, label_counts = np.unique(labels, return_counts=True)
-        label_distribution = dict(zip(unique_labels.astype(int), label_counts))
+        print("Label distribution:", dict(zip(unique_labels.astype(int), label_counts)))
 
-        print("Label distribution (count per class):", label_distribution)
+        # random baseline F1
+        random_f1s = random_baseline_by_distribution_f1(labels, np.unique(labels))
 
-        np.set_printoptions(suppress=True, precision=4, floatmode='fixed')
+        # sensitivity / specificity / F1
+        sens, specs, f1s = calculate_sen_spec(labels, preds, n_classes)
+        print(f"sensitivities: {sens}")
+        print(f"specificities: {specs}")
+        print(f"F1 scores: {f1s}")
 
-        # compute random baseline F1
-        random_f1s=random_baseline_by_distribution_f1(labels, np.unique(labels))
-
-        #compute sensitivity/specificity/F1
-        sens, specs, f1s = calculate_sen_spec(labels, preds, N_CLASSES)
-        print(f"sensitiviteis:{sens}")
-        print(f"specificities:{specs}")
-        print(f"F1 scores:{f1s}")
-        for class_idx in range(N_CLASSES):
+        for class_idx in range(n_classes):
             all_sen[class_idx].append(sens[class_idx])
             all_spe[class_idx].append(specs[class_idx])
             all_f1[class_idx].append(f1s[class_idx])
             all_random_f1[class_idx].append(random_f1s[class_idx])
-        
 
-        #compute ROC and PR per class
-        round_fpr, round_tpr, round_AUC, round_pr=compute_round_roc_pr(labels, probs, N_CLASSES)
-        for c in range(N_CLASSES):
+        # ROC & PR
+        round_fpr, round_tpr, round_AUC, round_pr = compute_round_roc_pr(
+            labels, probs, n_classes
+        )
+        for c in range(n_classes):
             all_fpr[c].append(round_fpr[c])
             all_tpr[c].append(round_tpr[c])
             all_AUC[c].append(round_AUC[c])
             all_pr[c].append(round_pr[c])
 
-        #obtain each slide prediction
-        round_result = get_slide_level_results(hp, round_idx, labels, preds, probs, test_set)
-        slide_csv_path=each_slide_result/f"{hp}_each_slide_result.csv"
+        # each-slide predictions
+        round_result = get_slide_level_results(
+            hp, round_idx, labels, preds, probs, test_set, label_map
+        )
+        slide_csv_path = each_slide_result / f"{hp}_each_slide_result.csv"
         append_to_csv(round_result, round_idx, slide_csv_path)
-        # ------------------------- Fold Loop Ends -------------------------
 
-    # ---------------------Summarize results----------------------------
-    
-    
-    #---------write per-round CSV--------
+    # --------- per-round summary CSV ----------
     round_rows = []
-    for class_idx in range(N_CLASSES):
+    for class_idx in range(n_classes):
         for round_idx in range(round_num):
             round_rows.append({
-            'hp_set': hp,
-            'subtype': LABEL_MAP[class_idx],
-            'round': round_idx,
-            'AUC': f"{all_AUC[class_idx][round_idx]:.4f}",
-            'Sensitivity': f"{all_sen[class_idx][round_idx]:.4f}",
-            'Specificity': f"{all_spe[class_idx][round_idx]:.4f}",
-            'PR_AUC': f"{all_pr[class_idx][round_idx]:.4f}",
-            'F1': f"{all_f1[class_idx][round_idx]:.4f}",
-        })
+                'hp_set': hp,
+                'subtype': label_map[class_idx],
+                'round': round_idx,
+                'AUC': f"{all_AUC[class_idx][round_idx]:.4f}",
+                'Sensitivity': f"{all_sen[class_idx][round_idx]:.4f}",
+                'Specificity': f"{all_spe[class_idx][round_idx]:.4f}",
+                'PR_AUC': f"{all_pr[class_idx][round_idx]:.4f}",
+                'F1': f"{all_f1[class_idx][round_idx]:.4f}",
+            })
     round_df_summary = pd.DataFrame(round_rows)
-    round_csv_path=final_result_path/f"each_round_result.csv"
-    mode = 'w' 
-    header = True 
-    round_df_summary.to_csv(round_csv_path, mode=mode, header=header, index=False)
-
-    print(f"[INFO] {hp} 10-round results written to {round_csv_path}")
+    round_csv_path = final_result_path / "each_round_result.csv"
+    round_df_summary.to_csv(round_csv_path, index=False)
+    print(f"[INFO] {hp} {round_num}-round results written to {round_csv_path}")
     
-    #---------write averaged metrics to final_result.csv--------
+    # --------- aggregated metrics ----------
     mean_sen, std_sen = summarize_metric_per_class(all_sen)
     mean_spe, std_spe = summarize_metric_per_class(all_spe)
     mean_f1, std_f1 = summarize_metric_per_class(all_f1)
@@ -504,9 +535,7 @@ def main(args):
     macro_auc = np.mean(list(mean_AUC.values()))
     macro_auc_std = np.std(list(mean_AUC.values()))
     
-
     rows = []
-    
     for c_idx, cname in enumerate(class_names):
         rows.append({
             'hp_set': hp,
@@ -528,35 +557,231 @@ def main(args):
         })
 
     df_summary = pd.DataFrame(rows)
-
-    final_csv_path=final_result_path/f"final_result.csv"
-    mode = 'w' 
-    header = True 
-    df_summary.to_csv(final_csv_path, mode=mode, header=header, index=False)
-
+    final_csv_path = final_result_path / "final_result.csv"
+    df_summary.to_csv(final_csv_path, index=False)
     print(f"[INFO] {hp} averaged results written to {final_csv_path}")
-    # ------------------------- AUC Figure plot begins -------------------------
+
+    # --------- ROC figure plotting ----------
     print(f"[INFO] Plotting ROC curves for {hp}")
     mean_fpr = np.linspace(0, 1, 100)
-    color_list=['green','blue','darkorange','red']
+    color_list = ['green', 'blue', 'darkorange', 'red']
 
-    #per-class ROC with 95% CI
     for class_idx, cname in enumerate(class_names):
-        interp_tprs=[]
+        interp_tprs = []
         for i in range(round_num):
-            interp_tpr = np.interp(mean_fpr, all_fpr[class_idx][i], all_tpr[class_idx][i])
-            interp_tpr[0]=0
+            interp_tpr = np.interp(
+                mean_fpr, all_fpr[class_idx][i], all_tpr[class_idx][i]
+            )
+            interp_tpr[0] = 0
             interp_tprs.append(interp_tpr)
         interp_tprs = np.array(interp_tprs)
 
-        plot_roc_curve_single(interp_tprs, all_AUC[class_idx],mean_fpr,color_list[class_idx],round_num,hp,roc_path,cname)
-
+        plot_roc_curve_single(
+            interp_tprs, all_AUC[class_idx], mean_fpr,
+            color_list[class_idx], round_num, hp, roc_path, cname
+        )
     
     plot_roc_curves_all(all_fpr, all_tpr, round_num, color_list, roc_path, hp, class_names)
 
-    # -------------------------plot confusion matrix-------------------------
+    # --------- confusion matrix ----------
     print(f"[INFO] Plotting confusion matrix for {hp}")
-    plot_confusion_matrix_from_csv(slide_csv_path, final_result_path)
+    plot_confusion_matrix_from_csv(slide_csv_path, final_result_path, label_map)
+
+
+
+
+def main(args):
+    evaluate_all_rounds(
+        manifest=args.manifest,
+        feature_bag_dir=args.feature_bag_dir,
+        checkpoint_dir=args.checkpoint_dir,
+        round_num=args.round_num,
+        workers=args.workers,
+        config_path=args.config,
+    )
+    # round_num = args.round_num
+    # test_set_path = args.manifest
+    # dataset_name = test_set_path.split('/')[-1].split('.csv')[0]
+    # input_feature_size = INPUT_FEATURE_SIZE
+
+    
+    # #get checkpoint path
+    # checkpoint_path = Path(args.checkpoint_dir) / dataset_name
+
+    # roc_path = Path(f"./ROC_Curve/{dataset_name}")
+    # roc_path.mkdir(parents=True, exist_ok=True)
+
+    # final_result_path = Path(f"./test_result/{dataset_name}")
+    # final_result_path.mkdir(parents=True, exist_ok=True)
+
+    # each_slide_result = Path(f"./test_result/{dataset_name}/each_slide_result")
+    # each_slide_result.mkdir(parents=True, exist_ok=True)
+    
+    # df = pd.read_csv(test_set_path)
+
+    # # ------------------------- Testing Loop for each hp -------------------------
+    # hp = HP_INDEX
+    # print(f"[INFO] Start testing model for hyperparameter set {hp}")
+    
+    # # 初始化存储容器
+    # all_fpr = {class_idx: [] for class_idx in range(N_CLASSES)} 
+    # all_tpr = {class_idx: [] for class_idx in range(N_CLASSES)}
+    # all_AUC = {class_idx: [] for class_idx in range(N_CLASSES)}
+    # all_sen = {class_idx: [] for class_idx in range(N_CLASSES)}
+    # all_spe = {class_idx: [] for class_idx in range(N_CLASSES)}
+    # all_pr = {class_idx: [] for class_idx in range(N_CLASSES)}
+    # all_f1 = {class_idx: [] for class_idx in range(N_CLASSES)}
+    # all_random_f1 ={class_idx: [] for class_idx in range(N_CLASSES)} # store random guess baseline
+    
+    # # ------------------------- Fold Loop -------------------------
+    # for round_idx in range(round_num): 
+
+    #     print(f"[INFO] Testing hp set {hp}, round {round_idx}")
+
+    #     #load model
+    #     model = load_model_from_checkpoint(hp, round_idx, checkpoint_path, input_feature_size,N_CLASSES,DEVICE)
+
+    #     # get test set for this round and convert to feature bags
+    #     test_set = df[df[f'round-{round_idx}']=='testing']
+    #     test_split = FeatureBagsDataset(test_set,args.feature_bag_dir)
+
+    #     test_loader = define_data_sampling(
+    #                 test_split,
+    #                 workers=args.workers,
+    #             )
+    #     class_names = get_class_names(test_set)
+
+    #     # run model and evaluate predictions
+    #     preds, probs, labels, test_loss = evaluate_model(
+    #                     model, test_loader, N_CLASSES, LOSS_FN, DEVICE
+    #                 )
+    #     print(f"preds is {preds}\n")
+
+    #     print(f"label is {labels}\n")
+    #     unique_labels, label_counts = np.unique(labels, return_counts=True)
+    #     label_distribution = dict(zip(unique_labels.astype(int), label_counts))
+
+    #     print("Label distribution (count per class):", label_distribution)
+
+    #     np.set_printoptions(suppress=True, precision=4, floatmode='fixed')
+
+    #     # compute random baseline F1
+    #     random_f1s=random_baseline_by_distribution_f1(labels, np.unique(labels))
+
+    #     #compute sensitivity/specificity/F1
+    #     sens, specs, f1s = calculate_sen_spec(labels, preds, N_CLASSES)
+    #     print(f"sensitiviteis:{sens}")
+    #     print(f"specificities:{specs}")
+    #     print(f"F1 scores:{f1s}")
+    #     for class_idx in range(N_CLASSES):
+    #         all_sen[class_idx].append(sens[class_idx])
+    #         all_spe[class_idx].append(specs[class_idx])
+    #         all_f1[class_idx].append(f1s[class_idx])
+    #         all_random_f1[class_idx].append(random_f1s[class_idx])
+        
+
+    #     #compute ROC and PR per class
+    #     round_fpr, round_tpr, round_AUC, round_pr=compute_round_roc_pr(labels, probs, N_CLASSES)
+    #     for c in range(N_CLASSES):
+    #         all_fpr[c].append(round_fpr[c])
+    #         all_tpr[c].append(round_tpr[c])
+    #         all_AUC[c].append(round_AUC[c])
+    #         all_pr[c].append(round_pr[c])
+
+    #     #obtain each slide prediction
+    #     round_result = get_slide_level_results(hp, round_idx, labels, preds, probs, test_set)
+    #     slide_csv_path=each_slide_result/f"{hp}_each_slide_result.csv"
+    #     append_to_csv(round_result, round_idx, slide_csv_path)
+    #     # ------------------------- Fold Loop Ends -------------------------
+
+    # # ---------------------Summarize results----------------------------
+    
+    
+    # #---------write per-round CSV--------
+    # round_rows = []
+    # for class_idx in range(N_CLASSES):
+    #     for round_idx in range(round_num):
+    #         round_rows.append({
+    #         'hp_set': hp,
+    #         'subtype': LABEL_MAP[class_idx],
+    #         'round': round_idx,
+    #         'AUC': f"{all_AUC[class_idx][round_idx]:.4f}",
+    #         'Sensitivity': f"{all_sen[class_idx][round_idx]:.4f}",
+    #         'Specificity': f"{all_spe[class_idx][round_idx]:.4f}",
+    #         'PR_AUC': f"{all_pr[class_idx][round_idx]:.4f}",
+    #         'F1': f"{all_f1[class_idx][round_idx]:.4f}",
+    #     })
+    # round_df_summary = pd.DataFrame(round_rows)
+    # round_csv_path=final_result_path/f"each_round_result.csv"
+    # mode = 'w' 
+    # header = True 
+    # round_df_summary.to_csv(round_csv_path, mode=mode, header=header, index=False)
+
+    # print(f"[INFO] {hp} 10-round results written to {round_csv_path}")
+    
+    # #---------write averaged metrics to final_result.csv--------
+    # mean_sen, std_sen = summarize_metric_per_class(all_sen)
+    # mean_spe, std_spe = summarize_metric_per_class(all_spe)
+    # mean_f1, std_f1 = summarize_metric_per_class(all_f1)
+    # mean_pr_auc, std_pr_auc = summarize_metric_per_class(all_pr)
+    # mean_AUC, std_AUC = summarize_metric_per_class(all_AUC)
+    # mean_random_f1, std_random_f1 = summarize_metric_per_class(all_random_f1)
+    # macro_auc = np.mean(list(mean_AUC.values()))
+    # macro_auc_std = np.std(list(mean_AUC.values()))
+    
+
+    # rows = []
+    
+    # for c_idx, cname in enumerate(class_names):
+    #     rows.append({
+    #         'hp_set': hp,
+    #         'subtype': cname,
+    #         'mean_test_auc': mean_AUC[c_idx],
+    #         'mean_test_auc_std': std_AUC[c_idx],
+    #         'macro_average_AUC': f"{macro_auc:.4f}",
+    #         'macro_average_AUC_std': f"{macro_auc_std:.4f}",
+    #         'mean_test_sensitivity': mean_sen[c_idx],
+    #         'mean_test_sensitivity_std': std_sen[c_idx],
+    #         'mean_test_specificity': mean_spe[c_idx],
+    #         'mean_test_specificity_std': std_spe[c_idx],
+    #         'mean_pr_auc': mean_pr_auc[c_idx],
+    #         'mean_pr_auc_std': std_pr_auc[c_idx],
+    #         'mean_f1': mean_f1[c_idx],
+    #         'mean_f1_std': std_f1[c_idx],
+    #         'mean_random_f1': mean_random_f1[c_idx],
+    #         'mean_random_f1_std': std_random_f1[c_idx],
+    #     })
+
+    # df_summary = pd.DataFrame(rows)
+
+    # final_csv_path=final_result_path/f"final_result.csv"
+    # mode = 'w' 
+    # header = True 
+    # df_summary.to_csv(final_csv_path, mode=mode, header=header, index=False)
+
+    # print(f"[INFO] {hp} averaged results written to {final_csv_path}")
+    # # ------------------------- AUC Figure plot begins -------------------------
+    # print(f"[INFO] Plotting ROC curves for {hp}")
+    # mean_fpr = np.linspace(0, 1, 100)
+    # color_list=['green','blue','darkorange','red']
+
+    # #per-class ROC with 95% CI
+    # for class_idx, cname in enumerate(class_names):
+    #     interp_tprs=[]
+    #     for i in range(round_num):
+    #         interp_tpr = np.interp(mean_fpr, all_fpr[class_idx][i], all_tpr[class_idx][i])
+    #         interp_tpr[0]=0
+    #         interp_tprs.append(interp_tpr)
+    #     interp_tprs = np.array(interp_tprs)
+
+    #     plot_roc_curve_single(interp_tprs, all_AUC[class_idx],mean_fpr,color_list[class_idx],round_num,hp,roc_path,cname)
+
+    
+    # plot_roc_curves_all(all_fpr, all_tpr, round_num, color_list, roc_path, hp, class_names)
+
+    # # -------------------------plot confusion matrix-------------------------
+    # print(f"[INFO] Plotting confusion matrix for {hp}")
+    # plot_confusion_matrix_from_csv(slide_csv_path, final_result_path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Testing Script")
@@ -569,6 +794,12 @@ if __name__ == "__main__":
         "--checkpoint_dir", 
         type=str, 
         default="./runs"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        help="Path to YAML config file (e.g. Morphologic_Spectrum_Construction/config.yaml). "
+            "If not provided, defaults to config.yaml next to this script.",
     )
     parser.add_argument(
         "--feature_bag_dir",

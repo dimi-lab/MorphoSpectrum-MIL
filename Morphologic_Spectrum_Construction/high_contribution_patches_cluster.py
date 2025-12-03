@@ -9,11 +9,15 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from sklearn.cluster import KMeans
 import faiss
 import sys
-from high_contribution_patches_extraction import split_feature_tile_id
-from train_early_stopping import get_feature_bag_path
 from pathlib import Path
 import argparse
 
+try:
+    from .high_contribution_patches_extraction import split_feature_tile_id
+    from .train_early_stopping import get_feature_bag_path
+except ImportError:
+    from high_contribution_patches_extraction import split_feature_tile_id
+    from train_early_stopping import get_feature_bag_path
 
 # -------------------- Utility functions --------------------
 def parse_embed_array(embed_str):
@@ -36,7 +40,7 @@ def export_hc_cluster_slide_metadata(df_sub, mapping_csv_path, out_dir):
 
     miss = df[df['person_id'].isna()]['slide_id'].unique()
     if len(miss):
-        print(f"Warning: {len(miss)} 个 slide_id 没有在映射表中找到：{miss[:5]} ...")
+        print(f"Warning: {len(miss)} slide_id not found in metadata mapping: {miss[:5]} ...")
 
     summary = (
         df
@@ -145,55 +149,208 @@ def select_best_k_consensus(features, k_list, reps, p_item, n_micro):
     print(f"==> Best k by consensus = {best_k}")
     return best_k, scores
 
-def main(args):
-    h5_base_path = args.feature_bag_dir
-    mapping_csv = args.metadata_csv
 
-    output_dir = args.out_dir/args.disease
+def cluster_high_contribution_patches(
+    metadata_csv,
+    high_contri_csv,
+    disease,
+    mode,
+    out_dir,
+    feature_bag_dir=None,
+    cluster_list=None,
+    reps: int = 30,
+    p_item: float = 0.8,
+    n_micro: int = 1000,
+    n_clusters: int | None = None,
+):
+    """
+    High-level API to cluster high-contribution patches and optionally export
+    QuPath-ready patch coordinates.
+
+    Parameters
+    ----------
+    metadata_csv : str or Path
+        Path to the cohort metadata CSV
+        (must include 'Person ID', 'Tissue ID', 'SVS Filename').
+    high_contri_csv : str or Path
+        CSV of high-contribution patches (output from high_contribution_patches_extraction),
+        must include columns: slide_id, label, tile_id, weight, embed.
+    disease : str
+        Target disease/subtype label to cluster (e.g., "Clear", "Endo", ...).
+    mode : {"evaluate_clusters", "export"}
+        - "evaluate_clusters": evaluate multiple candidate k using consensus clustering.
+        - "export": use a fixed --n_clusters to cluster all patches and export coordinates.
+    out_dir : str or Path
+        Output directory; a subfolder named after `disease` will be created inside it.
+    feature_bag_dir : str or Path, optional (required in "export" mode)
+        Directory containing all *_features.h5 files (feature bags).
+    cluster_list : list[int], optional
+        Candidate k values for consensus evaluation (used only in "evaluate_clusters" mode).
+    reps : int, default=30
+        Number of subsampling runs for consensus clustering.
+    p_item : float, default=0.8
+        Subsampling fraction per run (0–1].
+    n_micro : int, default=1000
+        Number of FAISS micro-centroids to compute before consensus.
+    n_clusters : int or None, optional
+        Number of clusters in "export" mode (required there).
+
+    Returns
+    -------
+    None
+        Results are written to disk:
+        - evaluate_clusters:
+            * consensus_k_selection.csv
+            * consensus_heatmap_k{k}.png
+        - export:
+            * cluster_slide_summary.csv
+            * slide_results/<slide_id>_hc_coords.csv
+    """
+    metadata_csv = Path(metadata_csv)
+    high_contri_csv = Path(high_contri_csv)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    disease = str(disease)
+    mode = str(mode)
+
+    # Disease-specific subfolder
+    output_dir = out_dir / disease
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    df_sub, features, weights = load_and_preprocess(
-        args.high_contri_csv, args.disease)
+    # Load and preprocess patch embeddings
+    df_sub, features, weights = load_and_preprocess(high_contri_csv, disease)
 
-    if args.mode == 'evaluate_clusters':
+    if mode == "evaluate_clusters":
+        if not cluster_list:
+            raise ValueError("--cluster_list must contain at least one candidate k value.")
+        if not (0 < p_item <= 1):
+            raise ValueError("--p_item must be a float in the range (0, 1].")
+        if n_micro <= 0:
+            raise ValueError("--n_micro must be a positive integer.")
+        if reps <= 0:
+            raise ValueError("--reps must be a positive integer.")
+
         best_k, scores = select_best_k_consensus(
-            features, args.cluster_list, args.reps, args.p_item, args.n_micro)
-        df_res = pd.DataFrame([{'k':k,'cophenetic_corr':v} for k,v in scores.items()])
-        df_res.to_csv(output_dir/'consensus_k_selection.csv', index=False)
+            features, cluster_list, reps, p_item, n_micro
+        )
+        # Save scores table
+        df_res = pd.DataFrame(
+            [{"k": k, "cophenetic_corr": v} for k, v in scores.items()]
+        )
+        df_res.to_csv(output_dir / "consensus_k_selection.csv", index=False)
+        print(f"[INFO] Saved consensus k-selection table to {output_dir/'consensus_k_selection.csv'}")
 
-        for k in args.cluster_list:
-            print(f"Plotting consensus heatmap for k={k}")
-            micro = compute_micro_clusters(features, n_micro=args.n_micro)
-            C = build_consensus_matrix(micro, k, n_runs=args.reps, p_item=args.p_item)
-            Zc = linkage(1 - C, method='average', metric='euclidean')
+        # Plot heatmaps for each k
+        micro = compute_micro_clusters(features, n_micro=n_micro)
+        for k in cluster_list:
+            print(f"[INFO] Plotting consensus heatmap for k={k}")
+            C = build_consensus_matrix(micro, k, n_runs=reps, p_item=p_item)
+            Zc = linkage(1 - C, method="average", metric="euclidean")
             g = sns.clustermap(
                 C,
                 row_linkage=Zc,
                 col_linkage=Zc,
-                cmap='Blues',
-                vmin=0, vmax=1,
-                figsize=(6, 6)
+                cmap="Blues",
+                vmin=0,
+                vmax=1,
+                figsize=(6, 6),
             )
-            out_png = output_dir/f'consensus_heatmap_k{k}.png'
+            out_png = output_dir / f"consensus_heatmap_k{k}.png"
             g.savefig(out_png, dpi=150)
             plt.close(g.figure)
-        print(f"Saved consensus heatmap for k={k} to {out_png}")
+            print(f"[INFO] Saved consensus heatmap for k={k} to {out_png}")
         return
 
-    if args.mode == "export":
-        best_k = args.n_clusters
-        # Perform complete linkage clustering
-        Z = linkage(features, method='complete', metric='euclidean')
-        labels = fcluster(Z, t=best_k, criterion='maxclust')
-        df_sub['hc_label'] = labels
-        
+    elif mode == "export":
+        if n_clusters is None:
+            raise ValueError("--n_clusters is required in 'export' mode.")
+        if feature_bag_dir is None:
+            raise ValueError("--feature_bag_dir is required in 'export' mode.")
+        feature_bag_dir = Path(feature_bag_dir)
+
+        # Perform complete linkage clustering on full feature set
+        print(f"[INFO] Performing complete-linkage clustering with k={n_clusters}")
+        Z = linkage(features, method="complete", metric="euclidean")
+        labels = fcluster(Z, t=n_clusters, criterion="maxclust")
+        df_sub["hc_label"] = labels
+
         # Export cluster summaries
-        export_hc_cluster_slide_metadata(df_sub,mapping_csv,output_dir)
+        export_hc_cluster_slide_metadata(df_sub, metadata_csv, output_dir)
 
         # Export patch-level coordinates for each slide (for QuPath import)
-        export_hc_cluster_coords_and_paths(df_sub, h5_base_path, output_dir)
+        export_hc_cluster_coords_and_paths(df_sub, feature_bag_dir, output_dir)
 
-        print(f"Exported clusters for k={best_k} using complete linkage.")
+        print(f"[INFO] Exported clusters for k={n_clusters} using complete linkage.")
+        return
+
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+    
+
+
+def main(args):
+    cluster_high_contribution_patches(
+        metadata_csv=args.metadata_csv,
+        high_contri_csv=args.high_contri_csv,
+        disease=args.disease,
+        mode=args.mode,
+        out_dir=args.out_dir,
+        feature_bag_dir=args.feature_bag_dir,
+        cluster_list=args.cluster_list,
+        reps=args.reps,
+        p_item=args.p_item,
+        n_micro=args.n_micro,
+        n_clusters=args.n_clusters,
+    )
+    # h5_base_path = args.feature_bag_dir
+    # mapping_csv = args.metadata_csv
+
+    # output_dir = args.out_dir/args.disease
+    # output_dir.mkdir(parents=True, exist_ok=True)
+
+    # df_sub, features, weights = load_and_preprocess(
+    #     args.high_contri_csv, args.disease)
+
+    # if args.mode == 'evaluate_clusters':
+    #     best_k, scores = select_best_k_consensus(
+    #         features, args.cluster_list, args.reps, args.p_item, args.n_micro)
+    #     df_res = pd.DataFrame([{'k':k,'cophenetic_corr':v} for k,v in scores.items()])
+    #     df_res.to_csv(output_dir/'consensus_k_selection.csv', index=False)
+
+    #     for k in args.cluster_list:
+    #         print(f"Plotting consensus heatmap for k={k}")
+    #         micro = compute_micro_clusters(features, n_micro=args.n_micro)
+    #         C = build_consensus_matrix(micro, k, n_runs=args.reps, p_item=args.p_item)
+    #         Zc = linkage(1 - C, method='average', metric='euclidean')
+    #         g = sns.clustermap(
+    #             C,
+    #             row_linkage=Zc,
+    #             col_linkage=Zc,
+    #             cmap='Blues',
+    #             vmin=0, vmax=1,
+    #             figsize=(6, 6)
+    #         )
+    #         out_png = output_dir/f'consensus_heatmap_k{k}.png'
+    #         g.savefig(out_png, dpi=150)
+    #         plt.close(g.figure)
+    #         print(f"Saved consensus heatmap for k={k} to {out_png}")
+    #     return
+
+    # if args.mode == "export":
+    #     best_k = args.n_clusters
+    #     # Perform complete linkage clustering
+    #     Z = linkage(features, method='complete', metric='euclidean')
+    #     labels = fcluster(Z, t=best_k, criterion='maxclust')
+    #     df_sub['hc_label'] = labels
+        
+    #     # Export cluster summaries
+    #     export_hc_cluster_slide_metadata(df_sub,mapping_csv,output_dir)
+
+    #     # Export patch-level coordinates for each slide (for QuPath import)
+    #     export_hc_cluster_coords_and_paths(df_sub, h5_base_path, output_dir)
+
+    #     print(f"Exported clusters for k={best_k} using complete linkage.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

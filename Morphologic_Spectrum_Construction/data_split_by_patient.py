@@ -191,51 +191,69 @@ def multi_scale_split(
     return results
 
 
-def main(args):
+def run_patient_level_split(
+    data_csv,
+    output_dir,
+    label_config,
+    mode: str,
+    split_num: int,
+    fold_num: int,
+    train_ratio: float,
+    val_ratio: float,
+    test_ratio: float,
+    base_seed: int = 123,
+):
+    """
+    High-level API to generate patient-level CV splits.
+
+    Returns
+    -------
+    list[Path]
+        List of generated CSV paths, one per shuffle.
+    """
+    data_csv = Path(data_csv)
+    output_csv_dir = Path(output_dir)
+    label_config = Path(label_config)
+
     # Load dataset CSV
-    csv_file_path = args.data_csv
-    df = pd.read_csv(csv_file_path)
+    df = pd.read_csv(data_csv)
 
     # Ensure output directory exists
-    output_csv_dir = Path(args.output_dir)
     output_csv_dir.mkdir(parents=True, exist_ok=True)
 
-    # Read core parameters
-    n_splits = args.split_num
-    n_folds = args.fold_num
-    train_ratio = args.train_ratio
-    val_ratio = args.val_ratio
-    test_ratio = args.test_ratio
-
     # Simple ratio check
-    if train_ratio + val_ratio + test_ratio != 1:
-        raise ValueError("Data ratio setting error: train_ratio + val_ratio + test_ratio must equal 1")
+    total_ratio = train_ratio + val_ratio + test_ratio
+    if abs(total_ratio - 1.0) > 1e-6:
+        raise ValueError(
+            f"Data ratio setting error: train_ratio + val_ratio + test_ratio "
+            f"must equal 1 (got {total_ratio:.6f})"
+        )
 
     # Create per-shuffle seeds
-    seed_list = random.sample(range(1000), n_splits)
+    rng = random.Random(base_seed)
+    seed_list = rng.sample(range(10_000), split_num)
 
-    # Derive slide_id from SVS filename (remove brackets/quotes and .svs suffix)
-    df["slide_id"] = df["SVS Filename"].str.replace(".svs", "")
+    # Derive slide_id from SVS filename (remove .svs suffix)
+    df["slide_id"] = df["SVS Filename"].str.replace(".svs", "", regex=False)
 
     # Load label mapping config
-    label_cfg = load_label_config(args.label_config)
+    label_cfg = load_label_config(label_config)
     name2id = label_cfg["name2id"]
-
-    # Mode: "even" or "random"
-    mode = args.mode
 
     # Split by subtype and process each subtype independently
     grouped = df.groupby("Subtype")
 
-    for s_index in range(n_splits):
+    output_paths = []
+
+    for s_index in range(split_num):
         print(f"\nBegin split #{s_index}")
         all_results = {}
         for subtype, df_subtype in grouped:
-            print(f"\nStart {subtype} splitting into {n_folds} folds")
+            print(f"\nStart {subtype} splitting into {fold_num} folds")
             subtype_results = multi_scale_split(
                 subtype=subtype,
                 df_subtype=df_subtype,
-                n_folds=n_folds,
+                n_folds=fold_num,
                 train_ratio=train_ratio,
                 val_ratio=val_ratio,
                 test_ratio=test_ratio,
@@ -246,12 +264,29 @@ def main(args):
             all_results |= subtype_results
 
         # Write one CSV per shuffle
-        csv_filename = f"Datasplit_{s_index}_{n_folds}_fold_by_patient.csv"
+        csv_filename = f"Datasplit_{s_index}_{fold_num}_fold_by_patient.csv"
         output_csv_path = output_csv_dir / csv_filename
         final_df = pd.DataFrame(list(all_results.values()))
         final_df.to_csv(output_csv_path, index=False)
         print(f"Wrote split CSV: {output_csv_path}")
+        output_paths.append(output_csv_path)
 
+    return output_paths
+
+def main(args):
+    run_patient_level_split(
+        data_csv=args.data_csv,
+        output_dir=args.output_dir,
+        label_config=args.label_config,
+        mode=args.mode,
+        split_num=args.split_num,
+        fold_num=args.fold_num,
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        base_seed=123,
+    )
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Patient-level data splitting for cross-validation")

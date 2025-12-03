@@ -23,14 +23,10 @@ from torch.utils.data import (
 )
 from torch.utils.tensorboard import SummaryWriter
 
-from model import AttentionNet
-
-with open("config.yaml","r") as f:
-    config = yaml.safe_load(f)
-
-HP_INDEX = config["HP_INDEX"]
-INPUT_FEATURE_SIZE = config["INPUT_FEATURE_SIZE"]
-
+try:
+    from .model import AttentionNet  
+except ImportError:
+    from model import AttentionNet   
 
 def set_seed():
     random.seed(0)
@@ -74,10 +70,20 @@ class FeatureBagsDataset(Dataset):
         label = self.slide_df["label"][idx]
 
         full_path = get_feature_bag_path(self.data_dir, slide_id)
-        with h5py.File(full_path, "r") as hdf5_file:
-            features = hdf5_file["features"][:]
-            coords = hdf5_file["coords"][:]
-        #print(f"{slide_id} MOCO features shape:{features.shape}")
+        try:
+            with h5py.File(full_path, "r") as hdf5_file:
+                try:
+                    features = hdf5_file["features"][:]
+                except KeyError:
+                    raise KeyError(f"'features' dataset not found in H5 file: {full_path}")
+
+                try:
+                    coords = hdf5_file["coords"][:]
+                except KeyError:
+                    raise KeyError(f"'coords' dataset not found in H5 file: {full_path}")
+
+        except OSError as e:
+            raise OSError(f"Failed to open H5 file: {full_path}\nOriginal error: {e}")
         features = torch.from_numpy(features)
         return features, label, coords
 
@@ -479,10 +485,31 @@ def get_class_names(df):
     return class_names
 
 
-def main(args):
+from pathlib import Path
 
-    # Set random seed for some degree of reproducibility. See PyTorch docs on this topic for caveats.
-    # https://pytorch.org/docs/stable/notes/randomness.html#reproducibility
+def train_single_round(
+    manifest,
+    feature_bag_dir,
+    round_idx: int,
+    workers: int = 4,
+    full_training_index: int | None = None,
+    config_path: str | Path | None = None,
+):
+    """
+    Train CLAM for a single CV round (or on the full dataset).
+    """
+
+    # ---------- 1. Resolve paths and load the configuration file ----------
+    manifest = Path(manifest)
+    feature_bag_dir = Path(feature_bag_dir)
+
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    hp_index = config["HP_INDEX"]
+    input_feature_size = config["INPUT_FEATURE_SIZE"]
+
+    # ---------- 2. Set random seeds ----------
     set_seed()
 
     if not torch.cuda.is_available():
@@ -490,113 +517,116 @@ def main(args):
             "No CUDA device available. Training without one is not feasible."
         )
 
-    # ===================== LOAD DATASET ========================
-    df = pd.read_csv(args.manifest) 
-    class_names = get_class_names(df) #Obtain Class names for classification
-    round_index = str(args.round) #Index of the round for cross-validation
+    # ---------- 3. Load manifest ----------
+    df = pd.read_csv(manifest)
+    class_names = get_class_names(df)
+    round_index_str = str(round_idx)
 
-    dataset_path=args.manifest
-    dataset_name = dataset_path.split('/')[-1].split('.csv')[0]
+    dataset_name = manifest.stem  # e.g. Datasplit_0_10_fold_by_patient
 
-    # Check if the user wants to train on the full dataset (train + val) or using k-fold cross validation
-    if args.full_training is not None: 
+    # ---------- 4. Decide whether to perform full training or cross-validation ----------
+    if full_training_index is not None:
         print(
-            f"Training on full dataset (training + validation) with hparam set {args.full_training}"
+            f"Training on full dataset (training + validation) with hparam set {full_training_index}"
         )
-        if args.fold is not None: 
-            raise Exception(
-                "Both --full_training and --fold have been provided. These arguments are mutually exclusive."
-            )
         training_set = df
         val_split = [None]
-        base_run_id = f"full_dataset"
-    else: 
-        print(f"=> Round {round_index}")
-        base_run_id = f"round_{round_index}"
+        base_run_id = "full_dataset"
+    else:
+        print(f"=> Round {round_index_str}")
+        base_run_id = f"round_{round_index_str}"
         try:
-            training_set = df[df[f"round-{round_index}"] == "training"] 
-            validation_set = df[df[f"round-{round_index}"] == "validation"]
-        except:
+            training_set = df[df[f"round-{round_index_str}"] == "training"]
+            validation_set = df[df[f"round-{round_index_str}"] == "validation"]
+        except KeyError:
             raise Exception(
-                f"Column round-{round_index} does not exist in {args.manifest}"
+                f"Column round-{round_index_str} does not exist in {manifest}"
             )
-        val_split = FeatureBagsDataset(validation_set,args.feature_bag_dir)
-    
-    train_split = FeatureBagsDataset(training_set,args.feature_bag_dir)
-    # ===================== LOAD DATASET ========================       
+        val_split = FeatureBagsDataset(validation_set, feature_bag_dir)
+
+    train_split = FeatureBagsDataset(training_set, feature_bag_dir)
+
+    # ---------- 5. Git SHA & basic logging ----------
     try:
         commit = subprocess.check_output(["git", "describe", "--always"]).strip().decode("utf-8")
     except subprocess.CalledProcessError:
         commit = "unknown"
-    
-    git_sha = (
-        commit
-    )
+
+    git_sha = commit
     train_run_id = f"{git_sha}_{time.strftime('%Y%m%d-%H%M')}"
 
     print(f"=> Git SHA {train_run_id}")
     print(f"=> Training on {len(train_split)} samples")
     print(f"=> Validating on {len(val_split)} samples")
 
-    # ========= HYPERPARAMETERS SETTING =========
-    hp_index = HP_INDEX
+    # ---------- 6. Hyperparameters from config ----------
     train_cfg = config[hp_index]
     hparams = dict(
         sampling_method=train_cfg["sampling_method"],
         max_epochs=train_cfg["max_epochs"],
-        #Early stopping settings
-        earlystop_patience=train_cfg["earlystop_patience"], 
-        earlystop_min_epochs=train_cfg["earlystop_min_epochs"], 
-        # Optimizer settings
+        # Early stopping
+        earlystop_patience=train_cfg["earlystop_patience"],
+        earlystop_min_epochs=train_cfg["earlystop_min_epochs"],
+        # Optimizer
         initial_lr=float(train_cfg["initial_lr"]),
-        milestones=train_cfg["milestones"], 
+        milestones=train_cfg["milestones"],
         gamma_lr=train_cfg["gamma_lr"],
-        weight_decay=float(train_cfg["weight_decay"]), 
-        # Model architecture parameters. See model class for details.
+        weight_decay=float(train_cfg["weight_decay"]),
+        # Model architecture
         model_size=train_cfg["model_size"],
-        p_dropout_fc=train_cfg["p_dropout_fc"], #Dropout rate for the fully connected layer
-        p_dropout_atn=train_cfg["p_dropout_atn"], #Dropout rate for the attention layer
+        p_dropout_fc=train_cfg["p_dropout_fc"],
+        p_dropout_atn=train_cfg["p_dropout_atn"],
     )
     hparam_sets = [hparams]
     hparams_to_use = hparam_sets
-    if args.full_training is not None:
-        hparams_to_use = [hparam_sets[args.full_training]]
-    # ========= HYPERPARAMETERS SETTING =========
+    if full_training_index is not None:
+        hparams_to_use = [hparam_sets[full_training_index]]
 
     print(f"Start Training and Validation on {dataset_name}")
+
+    # ---------- 7. training loop ----------
     for i, hps in enumerate(hparams_to_use):
-        run_id = f"{base_run_id}_{hps['model_size']}_{hps['sampling_method']}_{hp_index}_{train_run_id}"
-        """
-        fold_0_small_random_hp0_90a8520_20240821-2309
-        base_run_id: fold_0
-        model_size:small
-        samplling_method: random
-        train_run_id: 90a8520_20240821-2309
-        """
-        
+        run_id = (
+            f"{base_run_id}_{hps['model_size']}_"
+            f"{hps['sampling_method']}_{hp_index}_{train_run_id}"
+        )
         print(f"Running train-eval loop {i} for {run_id}")
         print(hps)
+
         train_loader, val_loader = define_data_sampling(
             train_split,
             val_split,
             method=hps["sampling_method"],
-            workers=args.workers,
+            workers=workers,
         )
 
         run_train_eval_loop(
             train_loader=train_loader,
             val_loader=val_loader,
-            input_feature_size=INPUT_FEATURE_SIZE,
+            input_feature_size=input_feature_size,
             class_names=class_names,
             hparams=hps,
             run_id=run_id,
-            full_training=args.full_training is not None,
-            save_checkpoints=args.full_training is not None,
+            full_training=full_training_index is not None,
+            save_checkpoints=full_training_index is not None,
             dataset_name=dataset_name,
-            round_id = round_index,
+            round_id=round_index_str,
         )
 
     print("Finished training.")
+
+
+
+def main(args):
+    train_single_round(
+        manifest=args.manifest,
+        feature_bag_dir=args.feature_bag_dir,
+        round_idx=args.round,
+        workers=args.workers,
+        full_training_index=args.full_training,
+        config_path=args.config,  
+    )
+
     
 
 
@@ -622,10 +652,10 @@ if __name__ == "__main__":
         required=True,
     )
     parser.add_argument(
-        "--input_feature_size",
-        help="The size of the input features from the feature bags.",
-        type=int,
-        required=True,
+        "--config",
+        type=str,
+        help="Path to YAML config file (e.g. Morphologic_Spectrum_Construction/config.yaml). "
+            "If not provided, defaults to config.yaml next to this script.",
     )
     parser.add_argument(
         "--workers",
