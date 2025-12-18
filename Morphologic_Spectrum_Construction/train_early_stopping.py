@@ -223,6 +223,7 @@ def render_confusion_matrix(cm, class_names, normalize=False):
 def run_train_eval_loop(
     train_loader,
     val_loader,
+    out_ckp_dir,
     input_feature_size,
     class_names,
     hparams,
@@ -233,8 +234,8 @@ def run_train_eval_loop(
     round_id,
 ):
     # ========= CUSTOMIZATION POINT START =========
-    writer = SummaryWriter(os.path.join(f"./runs/{dataset_name}", run_id))
-
+    writer = SummaryWriter(out_ckp_dir / dataset_name / run_id)
+    
     device = torch.device("cuda")
 
     gpu_visible_str = os.environ.get("CUDA_VISIBLE_DEVICES", None)
@@ -490,6 +491,7 @@ from pathlib import Path
 def train_single_round(
     manifest,
     feature_bag_dir,
+    out_checkpoint_dir,
     round_idx: int,
     workers: int = 4,
     full_training_index: int | None = None,
@@ -603,6 +605,7 @@ def train_single_round(
         run_train_eval_loop(
             train_loader=train_loader,
             val_loader=val_loader,
+            out_ckp_dir = out_checkpoint_dir,
             input_feature_size=input_feature_size,
             class_names=class_names,
             hparams=hps,
