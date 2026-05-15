@@ -14,7 +14,7 @@ from preprocess import preprocess_wsi_to_h5
 
 from train_early_stopping import train_single_round
 
-from test_brca_binary import evaluate_all_rounds
+from test import evaluate_all_rounds
 
 from sample_stratification import run_sample_stratification
 
@@ -22,7 +22,7 @@ from high_contribution_patches_extraction import extract_high_contribution_patch
 
 #from high_contribution_patches_cluster import cluster_high_contribution_patches
 
-from high_contribution_patches_cluster_ext import cluster_high_contribution_patches_ext
+from high_contribution_patches_cluster import cluster_high_contribution_patches_ext
 
 
 # ==================== 1. Data Preparation ====================

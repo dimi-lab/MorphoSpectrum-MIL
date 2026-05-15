@@ -19,7 +19,7 @@ We also provide an integrated workflow script for the Stage 1 pipeline:
 python run_stage1_pipeline.py
 ```
 
-Detailed usage instructions for the integrated workflow script can be found in: [Integrated Workflow Usage Guide](##Integrated Workflow Usage Guide)
+Detailed usage instructions for the integrated workflow script can be found in: [Integrated Workflow Usage Guide](#integrated-workflow-usage-guide)
 
 For detailed explanations of each individual component, including script-level inputs, outputs, parameters, and implementation details, please continue reading the sections below.
 
@@ -299,7 +299,7 @@ It works by collecting `*_each_slide_result.csv` files generated during MIL mode
 
 - **`--test_result_root`**: Root directory containing all test results (e.g., `./test_result`), which should include subfolders like
   `Datasplit_*/each_slide_result/*_each_slide_result.csv`.
-- **`--metadata_csv`**: Cohort metadata CSV file (must include `Person ID`, `Tissue ID`, and `SVS Filename` columns).  See [Input Metadata CSV format](#1-input-metadata-csv-format) for details on how to prepare this file.
+- **`--metadata_csv`**: Cohort metadata CSV file (must include `Person ID`, `Tissue ID`, and `SVS Filename` columns).  See [Input Metadata CSV format](#2-input-metadata-csv-format) for details on how to prepare this file.
 - **`--out_dir`**: Output directory where the aggregated stratification CSV will be written.
 
 ### 3. Example run
@@ -424,7 +424,7 @@ It supports two modes:
 ### 2. Example run
 
 ```bash
-python high_contribution_patches_cluster_ext.py \
+python high_contribution_patches_cluster.py \
   --metadata_csv ./Data_Split/output_svs_file_mapping.csv \
   --high_contri_csv ./high_contri_extra/Clear_Consistently_Correct_all.csv \
   --disease Clear \
@@ -434,8 +434,8 @@ python high_contribution_patches_cluster_ext.py \
   --n_clusters 5 \
   --feature_bag_dir ./feature_bags \
   &> cluster_output.txt
-
-**`--high_contri_csv`**: High-contribution patch results obtained from [High-Contribution Patch Extraction](#high-contribution-patch-extraction).
+```
+**`--high_contri_csv`**: High-contribution patch results obtained from [High-Contribution Patch Extraction](#step-6--high-contribution-patch-extraction).
 
 **`--disease`**: Target subtype label to cluster.
 
