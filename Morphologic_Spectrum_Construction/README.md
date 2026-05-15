@@ -11,6 +11,17 @@ the complete pipeline for morphologic spectrum construction. A runnable demo of 
   <img src="Execution_Flow_of_Global_Explanation_Generation.png" alt="Execution Flow of Global Explanation Generation" width="40%">
 </p>
 
+## Integrated Workflow Script
+
+We also provide an integrated workflow script for the Stage 1 pipeline:
+
+```
+python run_stage1_pipeline.py
+```
+
+Detailed usage instructions for the integrated workflow script can be found in: [Integrated Workflow Usage Guide](##Integrated Workflow Usage Guide)
+
+For detailed explanations of each individual component, including script-level inputs, outputs, parameters, and implementation details, please continue reading the sections below.
 
 ## Step 1 – Data Preparation
 
@@ -158,6 +169,7 @@ for round in $(seq 0 $((n_folds-1))); do
   python -u train_early_stopping.py \
     --manifest "${label_file}" \
     --feature_bag_dir feature_bags \
+    --out_checkpoint_dir ./runs \
     --config ./config.yaml \
     --round "${round}" >> ./Train_Output.txt 2>&1
 done
@@ -222,22 +234,32 @@ In addition to numerical metrics, the script generates visualizations:
 
 ```
 #!/bin/bash
+set -euo pipefail
+
 output_dir="./Test_Output"
 mkdir -p "${output_dir}"
 
 label_file="Datasplit_0_10_fold_by_patient_random.csv"
+dataset_name=$(basename "${label_file}" .csv)
 
 check_dir="./runs"
 
-test_log="${output_dir}/test_output.txt" 
+test_log="${output_dir}/${dataset_name}_test.log"
+
 python -u test.py \
-    --manifest ${label_file} \
+    --manifest "${label_file}" \
     --feature_bag_dir feature_bags \
-    --checkpoint_dir ${check_dir} \
+    --checkpoint_dir "${check_dir}" \
     --config ./config.yaml \
-    --round_num 10 >> "${test_log}" 2>&1 &
-wait
+    --round_num 10 \
+    >> "${test_log}" 2>&1
+
+echo "[INFO] Test finished for ${dataset_name}" >> "${test_log}"
 ```
+
+### Script: `testing.sh`
+
+We provide a helper shell script `testing.sh` in this repository, which launches testing for all splits and folds across multiple GPUs.
 
 ### 4. Output results
 
@@ -375,34 +397,51 @@ python -u high_contribution_patches_extraction.py \
 
 ### 1. Purpose
 
-The script `high_contribution_patches_cluster.py` clusters **high-contribution patches** (with precomputed embeddings and attention weights) and optionally exports patch coordinates for downstream annotation in **QuPath**. It supports two modes:
+The script `high_contribution_patches_cluster.py` clusters **high-contribution patches** from a selected disease subtype and prediction-stability group. The input patches have precomputed embeddings and attention weights. The script optionally exports patch coordinates for downstream annotation in **QuPath**.
+
+It supports two modes:
 
 - **`evaluate_clusters`**
   Runs *consensus clustering* on a micro-clustered subset of embeddings to **score candidate numbers of clusters (`k`)**.
+  Outputs are saved under:
+
+  `out_dir/<stability>/<disease>/`
+
   Outputs:
   - `consensus_k_selection.csv` — table of `k` vs. cophenetic correlation (higher is better).
   - `consensus_heatmap_k{k}.png` — consensus matrices visualizing clustering stability.
+
 - **`export`**
-  Uses your chosen **`--n_clusters`** to perform hierarchical clustering on all patches, assigns each patch a **hierarchical cluster label (`hc_label`)**, and exports:
+  Uses your chosen **`--n_clusters`** to perform hierarchical clustering on all patches, assigns each patch a **hierarchical cluster label (`hc_label`)**, and exports results under:
+
+  `out_dir/<stability>/<disease>/`
+
+  Outputs:
   - `cluster_slide_summary.csv` — per-cluster counts by slide / person (helps sampling for annotation).
-  - `slide_results/<slide_id>_hc_coords.csv` — **patch coordinates** per slide  ready for **QuPath** import:
+  - `slide_results/<slide_id>_hc_coords.csv` — **patch coordinates** per slide ready for **QuPath** import:
     `slide_id, tile_id, hc_label, x, y, width, height`
 
 ### 2. Example run
 
-```
-python high_contribution_patches_cluster.py \
+```bash
+python high_contribution_patches_cluster_ext.py \
   --metadata_csv ./Data_Split/output_svs_file_mapping.csv \
-  --high_contri_csv Clear.csv \
+  --high_contri_csv ./high_contri_extra/Clear_Consistently_Correct_all.csv \
   --disease Clear \
+  --stability Consistently_Correct \
   --mode export \
   --out_dir ./heatmaps \
   --n_clusters 5 \
   --feature_bag_dir ./feature_bags \
   &> cluster_output.txt
-```
 
-- **`--high_contri_csv`**: High contribution patch results obtained from [High-Contribution Patch Extraction](#high-contribution-patch-extraction).
+**`--high_contri_csv`**: High-contribution patch results obtained from [High-Contribution Patch Extraction](#high-contribution-patch-extraction).
+
+**`--disease`**: Target subtype label to cluster.
+
+**`--stability`**: Target prediction-stability group. Supported values are `Consistently_Correct`, `Highly_Variable`, and `Consistently_Incorrect`.
+
+**`--mode`**: Use `evaluate_clusters` to select candidate cluster numbers, or `export` to generate final cluster assignments and QuPath-ready coordinate files.
 
 ### 3. Troubleshooting
 
@@ -507,6 +546,63 @@ This file contains:
   - transitional proportion (`pi_trans`)
 
 The exported file is directly loaded in MorphoXAI Stage 2 for efficient and reproducible spectrum mapping of independent test slides.
+
+## Integrated Workflow Usage Guide
+
+### Launch the Integrated Workflow
+
+Run:
+
+```
+python run_stage1_pipeline.py
+```
+
+At startup, the script will ask:
+
+```
+Press Enter to run all, or enter the function number to start running from that function:
+```
+
+Users may therefore:
+
+- run the complete Stage 1 pipeline
+- resume from intermediate stages
+- rerun only selected stages
+
+------
+
+### Required Inputs
+
+Before running the integrated workflow script, users should prepare the following files and directories.
+
+| Input              | Default Location  | Description                                |
+| ------------------ | ----------------- | ------------------------------------------ |
+| Metadata CSV file  | `./Data_Split/`   | Metadata file describing slides and labels |
+| WSI files (`.svs`) | `./wsi/`          | Whole-slide image files                    |
+| `config.yaml`      | Working directory | Configuration file                         |
+
+------
+
+### Default Output Directories
+
+The integrated workflow script generates outputs in the following default directories.
+
+| Directory              | Description                                                  |
+| ---------------------- | ------------------------------------------------------------ |
+| `./Data_Split/`        | Generated patient-level split files                          |
+| `./feature_bags/`      | Extracted WSI feature bags (`.h5`)                           |
+| `./runs/`              | Trained MIL model checkpoints                                |
+| `./test_result/`       | MIL testing outputs and aggregated prediction results        |
+| `./ROC_Curve/`         | ROC curve visualizations                                     |
+| `./high_contri_extra/` | Extracted high-contribution patch data                       |
+| `./heatmaps/`          | High-contribution patch clustering outputs and visualizations |
+
+------
+
+### Customizing Directory Settings
+
+All default input and output directories are defined directly in the workflow script and can be modified by users if needed.
+
 
 ## MorphoCA: QuPath Extension for Cluster Visualization and Annotation
 

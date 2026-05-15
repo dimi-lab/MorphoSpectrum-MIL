@@ -150,10 +150,11 @@ def select_best_k_consensus(features, k_list, reps, p_item, n_micro):
     return best_k, scores
 
 
-def cluster_high_contribution_patches(
+def cluster_high_contribution_patches_ext(
     metadata_csv,
     high_contri_csv,
     disease,
+    stability,
     mode,
     out_dir,
     feature_bag_dir=None,
@@ -161,7 +162,7 @@ def cluster_high_contribution_patches(
     reps: int = 30,
     p_item: float = 0.8,
     n_micro: int = 1000,
-    n_clusters: int | None = None,
+    n_clusters = None,
 ):
     """
     High-level API to cluster high-contribution patches and optionally export
@@ -212,10 +213,11 @@ def cluster_high_contribution_patches(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     disease = str(disease)
+    stability = str(stability)
     mode = str(mode)
 
     # Disease-specific subfolder
-    output_dir = out_dir / disease
+    output_dir = out_dir / stability/ disease
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load and preprocess patch embeddings
@@ -288,12 +290,12 @@ def cluster_high_contribution_patches(
         raise ValueError(f"Unknown mode: {mode}")
     
 
-
 def main(args):
-    cluster_high_contribution_patches(
+    cluster_high_contribution_patches_ext(
         metadata_csv=args.metadata_csv,
         high_contri_csv=args.high_contri_csv,
         disease=args.disease,
+        stability=args.stability,
         mode=args.mode,
         out_dir=args.out_dir,
         feature_bag_dir=args.feature_bag_dir,
@@ -376,6 +378,13 @@ if __name__ == "__main__":
         type=str, 
         help="Target disease/subtype to cluster (e.g., Endo, High, ...).",
         required=True
+    )
+    parser.add_argument(
+        "--stability",
+        type=str,
+        choices=["Consistently_Correct", "Consistently_Incorrect", "Highly_Variable"],
+        help="Target stability category.",
+        required=True,
     )
     parser.add_argument(
         '--mode', 

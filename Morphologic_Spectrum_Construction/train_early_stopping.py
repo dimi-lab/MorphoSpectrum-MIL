@@ -624,6 +624,7 @@ def main(args):
     train_single_round(
         manifest=args.manifest,
         feature_bag_dir=args.feature_bag_dir,
+        out_checkpoint_dir = Path(args.out_checkpoint_dir),
         round_idx=args.round,
         workers=args.workers,
         full_training_index=args.full_training,
@@ -652,6 +653,12 @@ if __name__ == "__main__":
         "--feature_bag_dir",
         type=str,
         help="Directory where all *_features.h5 files are stored",
+        required=True,
+    )
+    parser.add_argument(
+        "--out_checkpoint_dir",
+        type=str,
+        help="Directory where model checkpoints are stored",
         required=True,
     )
     parser.add_argument(
