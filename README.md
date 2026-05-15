@@ -101,3 +101,21 @@ pip install git+https://github.com/Mahmoodlab/CONCH.git
 This repository’s implementation of MorphoXAI is built on top of the CLAM multiple-instance learning framework. Accordingly, the preprocessing, feature-bag generation, and training scripts follow the input/output conventions of CLAM (e.g., `.h5` feature bags, slide-level metadata CSVs, and CLAM-style training loops).
 
 Users who wish to adapt MorphoXAI to other MIL architectures (such as TransMIL, ABMIL, DSMIL, or transformer-based models) may modify these components to match the data formats and training requirements of their chosen model. The overall MorphoXAI workflow—spectrum construction and slide-level explanation—remains compatible with alternative MIL backbones.
+
+## Citation
+
+If you use this repository in your research, please cite:
+
+```bibtex
+@article{lou2026morphoxai,
+  title={A human-in-the-loop explanation framework for morphologically transparent AI predictions from whole-slide images},
+  author={Lou, Peiliang and Zhu, Yi and Chia, Nicholas and others},
+  journal={npj Digital Medicine},
+  year={2026},
+  doi={10.1038/s41746-026-02741-z}
+}
+```
+
+Reference:
+
+Lou, P., Zhu, Y., Chia, N. et al. *A human-in-the-loop explanation framework for morphologically transparent AI predictions from whole-slide images*. npj Digital Medicine (2026). https://doi.org/10.1038/s41746-026-02741-z
